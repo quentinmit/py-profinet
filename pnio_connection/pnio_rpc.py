@@ -9,7 +9,7 @@
 """
 PNIO RPC endpoints
 """
-
+from enum import IntEnum
 import struct
 from uuid import UUID
 
@@ -24,6 +24,14 @@ from scapy.layers.dcerpc import DceRpc4, DceRpc4Payload
 from scapy.contrib.rtps.common_types import EField
 from scapy.compat import bytes_hex
 from scapy.volatile import RandUUID
+
+class RPC_IO_OPNUM(IntEnum):
+    Connect = 0
+    Release = 1
+    Read = 2
+    Write = 3
+    Control = 4
+    ReadImplicit = 5
 
 # Block Packet
 BLOCK_TYPES_ENUM = {
@@ -794,8 +802,8 @@ class ARBlockReq(Block):
         BitEnumField("ARProperties_DeviceAccess", 0, 1,
                      ["ExpectedSubmodule", "Controlled_by_IO_device_app"]),
         BitField("ARProperties_reserved_1", 0, 3),
-        BitEnumField("ARProperties_ParametrizationServer", 0, 1,
-                     ["External_PrmServer", "CM_Initator"]),
+        BitEnumField("ARProperties_ParameterizationServer", 0, 1,
+                     ["External_PrmServer", "CM_Initiator"]),
         BitField("ARProperties_SupervisorTakeoverAllowed", 0, 1),
         BitEnumField("ARProperties_State", 1, 3, {1: "Active"}),
         ShortField("CMInitiatorActivityTimeoutFactor", 1000),
@@ -1546,6 +1554,11 @@ class PNIOServiceResPDU(Packet):
         # type = 2 => response
         if rpc.ptype == 2 and \
                 str(rpc.object).startswith("dea00000-6c97-11d1-8271-"):
+            return True
+        return False
+
+    def answers(self, other):
+        if isinstance(other, PNIOServiceReqPDU) and self.underlayer and other.underlayer and other.underlayer.seqnum == self.underlayer.seqnum:
             return True
         return False
 
