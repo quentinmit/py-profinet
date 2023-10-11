@@ -291,17 +291,17 @@ def get_write_request_msg(ip, device, auuid):
         sport=49153,
         dport=34964,
     )
-    dcerpc = DceRpc(
-        type="request",
+    dcerpc = DceRpc4(
+        ptype="request",
         flags1=0x28,
         flags2=0x0,
-        endianness="little",
+        endian="little",
         encoding="ASCII",
         float="IEEE",
         # IMPORTANT FOR WRITE REQUEST AND OPERATION OF PNIO CONTEXT MANAGER MESSAGES
         opnum=3,
-        interface_uuid="dea00001-6c97-11d1-8271-00a02442df7d",
-        activity="df16c5b3-2794-11b2-8000-a381734cba00",
+        if_id="dea00001-6c97-11d1-8271-00a02442df7d",
+        act_id="df16c5b3-2794-11b2-8000-a381734cba00",
     )
 
     seqNum = 1
