@@ -1,151 +1,64 @@
+from dataclasses import dataclass
+from typing import List
 from xml.dom.minidom import parse, Node
 
-BYTE_SIZE = {"Unsigned8": 1, "F_MessageTrailer4Byte": 4}
+BYTE_SIZE = {
+    "Unsigned8": 1,
+    "Unsigned16": 2,
+    "Unsigned32": 4,
+    "F_MessageTrailer4Byte": 4,
+}
 
 
+@dataclass
 class XMLIsoReference:
+    iso_part: str
+    iso_edition: str
+    profile_technology: str
+
     def __init__(self, iso_ref_object):
         self.iso_part = (
-            iso_ref_object.getElementsByTagName("ISO15745Part")[0].firstChild.nodeValue,
+            iso_ref_object.getElementsByTagName("ISO15745Part")[0].firstChild.nodeValue
         )
         self.iso_edition = (
             iso_ref_object.getElementsByTagName("ISO15745Edition")[
                 0
-            ].firstChild.nodeValue,
+            ].firstChild.nodeValue
         )
         self.profile_technology = iso_ref_object.getElementsByTagName(
             "ProfileTechnology"
         )[0].firstChild.nodeValue
 
-
+@dataclass
 class XMLProfileHeader:
+    profile_identification: str
+    profile_revision: str
+    profile_name: str
+    profile_source: str
+    profile_class: str
+    iso_ref: XMLIsoReference
+
     def __init__(self, xml_header):
         iso_ref_object = xml_header.getElementsByTagName("ISO15745Reference")[0]
         iso_ref = XMLIsoReference(iso_ref_object)
         self.profile_identification = (
             xml_header.getElementsByTagName("ProfileIdentification")[
                 0
-            ].firstChild.nodeValue,
+            ].firstChild.nodeValue
         )
         self.profile_revision = (
-            xml_header.getElementsByTagName("ProfileRevision")[0].firstChild.nodeValue,
+            xml_header.getElementsByTagName("ProfileRevision")[0].firstChild.nodeValue
         )
         self.profile_name = (
-            xml_header.getElementsByTagName("ProfileName")[0].firstChild.nodeValue,
+            xml_header.getElementsByTagName("ProfileName")[0].firstChild.nodeValue
         )
         self.profile_source = (
-            xml_header.getElementsByTagName("ProfileSource")[0].firstChild.nodeValue,
+            xml_header.getElementsByTagName("ProfileSource")[0].firstChild.nodeValue
         )
         self.profile_class = (
-            xml_header.getElementsByTagName("ProfileClassID")[0].firstChild.nodeValue,
+            xml_header.getElementsByTagName("ProfileClassID")[0].firstChild.nodeValue
         )
         self.iso_ref = iso_ref
-
-
-class XMLProfileBody:
-    def __init__(self, xml_body):
-        xml_device_id_object = xml_body.getElementsByTagName("DeviceIdentity")[0]
-
-        xml_application_process_object = xml_body.getElementsByTagName(
-            "ApplicationProcess"
-        )[0]
-        xml_device_access_point_list_object = (
-            xml_application_process_object.getElementsByTagName(
-                "DeviceAccessPointList"
-            )[0]
-        )
-
-        self.dap_list = []
-
-        for (
-            xml_device_access_point_item_object
-        ) in xml_application_process_object.getElementsByTagName(
-            "DeviceAccessPointItem"
-        ):
-
-            # DEVICE MODULE INFO
-            xml_device_access_point_item_module_info_object = (
-                xml_device_access_point_item_object.getElementsByTagName("ModuleInfo")[
-                    0
-                ]
-            )
-
-            xml_module_info = XMLDeviceItemModuleInfo(
-                xml_device_access_point_item_module_info_object
-            )
-
-            # MODULE LIST
-            xml_device_access_point_usable_modules_object = (
-                xml_device_access_point_item_object.getElementsByTagName(
-                    "UseableModules"
-                )[0]
-            )
-            xml_device_access_point_modules_object = (
-                xml_application_process_object.getElementsByTagName("ModuleList")[0]
-            )
-
-            xml_device_access_point_system_defined_submodule_list_object = (
-                xml_device_access_point_item_object.getElementsByTagName(
-                    "SystemDefinedSubmoduleList"
-                )[0]
-            )
-
-            xml_device_access_point_interface_submodule_item_object = xml_device_access_point_system_defined_submodule_list_object.getElementsByTagName(
-                "InterfaceSubmoduleItem"
-            )[
-                0
-            ]
-
-            xml_device_access_point_port_submodule_item_object = xml_device_access_point_system_defined_submodule_list_object.getElementsByTagName(
-                "PortSubmoduleItem"
-            )[
-                0
-            ]
-
-            self.dap_list.append(
-                XMLDeviceAccessPointItem(
-                    id=xml_device_access_point_item_object.getAttribute("ID"),
-                    dns_compatible_name=xml_device_access_point_item_object.getAttribute(
-                        "DNS_CompatibleName"
-                    ),
-                    module_info=xml_module_info,
-                    usable_modules=self.calc_module_list(
-                        xml_device_access_point_usable_modules_object,
-                        xml_device_access_point_modules_object,
-                    ),
-                    interface_submodule_item=XMLInterfaceSubmoduleItem(
-                        xml_device_access_point_interface_submodule_item_object
-                    ),
-                    port_submodule_item=XMLPortSubmoduleItem(
-                        xml_device_access_point_port_submodule_item_object
-                    ),
-                )
-            )
-
-        self.device_identity = XMLDeviceIdentity(xml_device_id_object)
-
-    def calc_module_list(
-        self,
-        xml_device_access_point_usable_modules_object,
-        xml_device_access_point_modules_object,
-    ):
-        modules_list = []
-        for (
-            item_ref
-        ) in xml_device_access_point_usable_modules_object.getElementsByTagName(
-            "ModuleItemRef"
-        ):
-            for (
-                module_ref
-            ) in xml_device_access_point_modules_object.getElementsByTagName(
-                "ModuleItem"
-            ):
-                if module_ref.getAttribute("ID") == item_ref.getAttribute(
-                    "ModuleItemTarget"
-                ):
-
-                    modules_list.append(XMLModuleItem(module_ref, item_ref))
-        return modules_list
 
 
 class XMLDeviceIdentity:
@@ -292,9 +205,12 @@ class XMLParameterRecordDataItem:
         # Length in Byte
         self.length = int(parameter_element.getAttribute("Length"))
         self.default = int(ref_item.getAttribute("DefaultValue"))
-        self.min_value, self.max_value = [
-            int(x) for x in ref_item.getAttribute("AllowedValues").split("..")
-        ]
+        allowed_values = ref_item.getAttribute("AllowedValues")
+        if ".." in allowed_values:
+            min_value, max_value = tuple(int(x) for x in allowed_values.split(".."))
+            self.allowed_values = range(min_value, max_value+1)
+        else:
+            self.allowed_values = [int(x) for x in allowed_values.split()]
         self.data_type = ref_item.getAttribute("Unsigned32")
 
 class XMLInterfaceSubmoduleItem:
@@ -328,38 +244,147 @@ class XMLPortSubmoduleItem:
         ]
 
 
+@dataclass
 class XMLDeviceAccessPointItem:
-    def __init__(
+    id: str
+    dns_compatible_name: str
+    module_info: XMLDeviceItemModuleInfo
+    usable_modules: List[XMLModuleItem]
+    interface_submodule_item: XMLInterfaceSubmoduleItem
+    port_submodule_item: XMLPortSubmoduleItem
+    conformance_class: str = "B"
+    netload_class: str = "III"
+    io_config_max_length: int = 512
+    io_config_min_length: int = 512
+    fixed_in_slots: str = "0"
+    physical_slots: str = "0..2"
+    min_device_interval: int = 32
+    module_ident_number: int = 0x00000001
+
+@dataclass
+class XMLDeviceIdentity:
+    def __init__(self, xml_device_id_object):
+        self.device_id = (xml_device_id_object.getAttribute("DeviceID"),)
+        self.vendor_id = (xml_device_id_object.getAttribute("VendorID"),)
+        self.info_text = (
+            xml_device_id_object.getElementsByTagName("InfoText")[0].getAttribute(
+                "TextId"
+            ),
+        )
+        self.vendor_name = (
+            xml_device_id_object.getElementsByTagName("VendorName")[0].getAttribute(
+                "VendorName"
+            ),
+        )
+
+@dataclass
+class XMLProfileBody:
+    dap_list: List[XMLDeviceAccessPointItem]
+    device_identity: XMLDeviceIdentity
+
+    def __init__(self, xml_body):
+        xml_device_id_object = xml_body.getElementsByTagName("DeviceIdentity")[0]
+
+        xml_application_process_object = xml_body.getElementsByTagName(
+            "ApplicationProcess"
+        )[0]
+        xml_device_access_point_list_object = (
+            xml_application_process_object.getElementsByTagName(
+                "DeviceAccessPointList"
+            )[0]
+        )
+
+        self.dap_list = []
+
+        for (
+            xml_device_access_point_item_object
+        ) in xml_application_process_object.getElementsByTagName(
+            "DeviceAccessPointItem"
+        ):
+
+            # DEVICE MODULE INFO
+            xml_device_access_point_item_module_info_object = (
+                xml_device_access_point_item_object.getElementsByTagName("ModuleInfo")[
+                    0
+                ]
+            )
+
+            xml_module_info = XMLDeviceItemModuleInfo(
+                xml_device_access_point_item_module_info_object
+            )
+
+            # MODULE LIST
+            xml_device_access_point_usable_modules_object = (
+                xml_device_access_point_item_object.getElementsByTagName(
+                    "UseableModules"
+                )[0]
+            )
+            xml_device_access_point_modules_object = (
+                xml_application_process_object.getElementsByTagName("ModuleList")[0]
+            )
+
+            xml_device_access_point_system_defined_submodule_list_object = (
+                xml_device_access_point_item_object.getElementsByTagName(
+                    "SystemDefinedSubmoduleList"
+                )[0]
+            )
+
+            xml_device_access_point_interface_submodule_item_object = xml_device_access_point_system_defined_submodule_list_object.getElementsByTagName(
+                "InterfaceSubmoduleItem"
+            )[
+                0
+            ]
+
+            xml_device_access_point_port_submodule_item_object = xml_device_access_point_system_defined_submodule_list_object.getElementsByTagName(
+                "PortSubmoduleItem"
+            )[
+                0
+            ]
+
+            self.dap_list.append(
+                XMLDeviceAccessPointItem(
+                    id=xml_device_access_point_item_object.getAttribute("ID"),
+                    dns_compatible_name=xml_device_access_point_item_object.getAttribute(
+                        "DNS_CompatibleName"
+                    ),
+                    module_info=xml_module_info,
+                    usable_modules=self.calc_module_list(
+                        xml_device_access_point_usable_modules_object,
+                        xml_device_access_point_modules_object,
+                    ),
+                    interface_submodule_item=XMLInterfaceSubmoduleItem(
+                        xml_device_access_point_interface_submodule_item_object
+                    ),
+                    port_submodule_item=XMLPortSubmoduleItem(
+                        xml_device_access_point_port_submodule_item_object
+                    ),
+                )
+            )
+
+        self.device_identity = XMLDeviceIdentity(xml_device_id_object)
+
+    def calc_module_list(
         self,
-        id,
-        dns_compatible_name,
-        module_info,
-        usable_modules,
-        interface_submodule_item,
-        port_submodule_item,
-        conformance_class="B",
-        netload_class="III",
-        io_config_max_length="512",
-        io_config_min_length="512",
-        fixed_in_slots="0",
-        physical_slots="0..2",
-        min_device_interval="32",
-        module_ident_number="0x00000001",
+        xml_device_access_point_usable_modules_object,
+        xml_device_access_point_modules_object,
     ):
-        self.id = id
-        self.dns_compatible_name = dns_compatible_name
-        self.module_info = module_info
-        self.usable_modules = usable_modules
-        self.interface_submodule_item = interface_submodule_item
-        self.port_submodule_item = port_submodule_item
-        self.conformance_class = conformance_class
-        self.netload_class = netload_class
-        self.io_config_max_length = io_config_max_length
-        self.io_config_min_length = io_config_min_length
-        self.fixed_in_slots = fixed_in_slots
-        self.physical_slots = physical_slots
-        self.min_device_interval = min_device_interval
-        self.module_ident_number = module_ident_number
+        modules_list = []
+        for (
+            item_ref
+        ) in xml_device_access_point_usable_modules_object.getElementsByTagName(
+            "ModuleItemRef"
+        ):
+            for (
+                module_ref
+            ) in xml_device_access_point_modules_object.getElementsByTagName(
+                "ModuleItem"
+            ):
+                if module_ref.getAttribute("ID") == item_ref.getAttribute(
+                    "ModuleItemTarget"
+                ):
+
+                    modules_list.append(XMLModuleItem(module_ref, item_ref))
+        return modules_list
 
 
 class XMLDevice:
