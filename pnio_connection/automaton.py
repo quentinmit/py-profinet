@@ -1,4 +1,5 @@
 from asyncio import get_running_loop, DatagramProtocol, DatagramTransport
+from contextlib import asynccontextmanager
 import enum
 import logging
 import random
@@ -8,13 +9,14 @@ import uuid
 from typing import Any, Optional
 
 from scapy.packet import Packet
+from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
 from scapy.supersocket import StreamSocket
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import Block, ARBlockReq, RPC_IO_OPNUM, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU
+from .pnio_rpc import Block, ARBlockReq, RPC_IO_OPNUM, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU
 from scapy.automaton import Automaton, ATMT
 from scapy.interfaces import resolve_iface
-from scapy.all import conf
+from scapy.config import conf
 from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
 from .pnio_dcp import (
     ProfinetDCP,
@@ -127,6 +129,10 @@ class PNIORPCClient(Automaton):
             ])
         )
 
+class debug:
+    recv = PacketList([], "Received")
+    sent = PacketList([], "Sent")
+
 class RpcSocket(StreamSocket):
     def __init__(self, dst_host):
         port = socket.getservbyname("profinet-cm")
@@ -203,6 +209,9 @@ class DceRpcProtocol(DatagramProtocol):
         fut = get_running_loop().create_future()
         self.pending_requests[req.seqnum] = fut
         LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
+        if conf.debug_match:
+            debug.sent.append(req)
+        req.sent_time = req.time = time.time()
         self.transport.sendto(bytes(req), self.dst_addr)
         # TODO: Timeout?
         # TODO: Retries
@@ -226,7 +235,10 @@ class DceRpcProtocol(DatagramProtocol):
         except:
             LOGGER.exception("failed to parse packet")
             return
+        pkt.time = time.time()
         LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
+        if conf.debug_match:
+            debug.recv.append(pkt)
         # TODO: Ack?
         # TODO: Error handling?
         # TODO: Check packet type?
@@ -319,14 +331,17 @@ class PnioRpcError(Exception):
         return f"{self.error_code!r} - {self.error_decode!r} ({self.error_code_1!r} {self.error_code_2!r})"
 
 class PnioRpcProtocol(DceRpcProtocol):
-    async def rpc(self, opnum: int, blocks: list[Block], args_max=16696):
+    async def rpc(self, opnum: int, blocks: list[Block], args_max=32832): #16696):
         # TODO: Set automatically
         # in big endian, u16 instance, u16 device, u16 vendor
         # VendorID="0x00B0" DeviceID="0x015F"
         object = "dea00000-6c97-11d1-8271-0000015f00b0"
         res = await self.call_rpc(
             opnum=opnum,
-            pdu=PNIOServiceReqPDU(args_max=args_max, blocks=blocks),
+            pdu=PNIOServiceReqPDU(
+                args_max=args_max,
+                max_count=args_max,
+                blocks=blocks),
             object=object,
         )
         if not isinstance(res, PNIOServiceResPDU):
@@ -336,19 +351,33 @@ class PnioRpcProtocol(DceRpcProtocol):
             raise PnioRpcError(res.status)
         return res.blocks
 
-class ContextManagerProtocol(PnioRpcProtocol):
-    def __init__(self, dst_host):
-        super().__init__(dst_host=dst_host)
-        self.aruuid = 0
-        self.session_key = 0
+# 3.2.3.7 Coding of the field SendSeqNum
+# This field shall be coded as data type Unsigned16 with the following values:
+# Hexadecimal (0x0000 – 0x7FFF)
+#   contains a valid SendSeqNum of a Data-RTA-PDU
+#   This field contains the number of the Data-RTA-PDU. The first issued Data-RTA-PDU shall contain the SendSeqNum 0. The incrementing and comparison of this number is done using the modulo 215 operation.
+# Hexadecimal (0xFFFE, 0xFFFF)
+#   These values are used synchronize sender and receiver after esablishment of the application relationship. The value 0xFFFF indicates the first Data-RTA-PDU. The value 0xFFFE indicates that there was no reception of a Data-RTA-PDU before. These values are not valid to indicate user data.
+#   NOTE The first Data-RTA-PDU sets SendSeqNum=0xFFFF and AckSeqNum=0xFFFE. It is acknowledged with SendSeqNum=0xFFFE and AckSeqNum=0xFFFF. The second Data-RTA-PDU sets SendSeqNum=0 and AckSeqNum=0xFFFE. The synchronization is necessary because the acyclic protocol does not define any connection monitoring.
+# 3.2.3.8 Coding of the field AckSeqNum
+# This field shall be coded as data type Unsigned16 with the following values:
+# Hexadecimal (0x0000 – 0x7FFF)
+#  contains a valid AckSeqNum
+#  This field contains the number of the Data-RTA-PDU that is expected to be acknowledged or wich is acknowledged.
+# Hexadecimal (0xFFFF, 0xFFFE)
+#  contains a initial AckSeqNum
+#  The value 0xFFFE indicates the there was no Data-RTA-PDU received before. The value 0xFFFF indicates acknowledges the reception of the first Data-RTA-PDU.
 
-    async def connect(self, cm_mac_addr):
-        if self.aruuid:
-            raise ValueError("connect while already connected")
-        self.session_key += 1
-        aruuid = uuid.uuid4()
+class Association:
+    def __init__(self, protocol):
+        self.protocol = protocol
+        self.session_key = protocol.session_key
+        protocol.session_key += 1
+        self.aruuid = uuid.uuid4()
+
+    async def _connect(self, cm_mac_addr):
         ar_block_req = ARBlockReq(
-            ARUUID=aruuid,
+            ARUUID=self.aruuid,
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
             CMInitiatorMacAdd=cm_mac_addr,
             # in big endian, the last part is u16 instance, u16 device, u16 vendor
@@ -358,20 +387,44 @@ class ContextManagerProtocol(PnioRpcProtocol):
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
             ARProperties_ParameterizationServer="CM_Initiator",
         )
-        res = await self.rpc(
+        res = await self.protocol.rpc(
             opnum=RPC_IO_OPNUM.Connect,
             blocks=[
                 ar_block_req,
             ],
         )
         # Success!
-        self.aruuid = aruuid
         return res
 
+    async def _release(self):
+        req = IODControlReq(ARUUID=self.aruuid, SessionKey=self.session_key, ControlCommand_Release=1)
+        # Spec says a successful release should return back the request with
+        # ControlCommand_Done=1, but it appears to return nothing.
+        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Release, blocks=[req]))
+
     async def read(self, slot=0, subslot=0, index=0):
-        req = IODReadReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index)
-        return (await self.rpc(opnum=RPC_IO_OPNUM.Read if self.aruuid else RPC_IO_OPNUM.ReadImplicit, blocks=[req]))[0]
+        req = IODReadReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
+        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Read, blocks=[req]))[0]
 
     async def write(self, data, slot=0, subslot=0, index=0):
         req = IODWriteReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index) / data
-        return (await self.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
+        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
+
+class ContextManagerProtocol(PnioRpcProtocol):
+    def __init__(self, dst_host):
+        super().__init__(dst_host=dst_host)
+        self.aruuid = 0
+        self.session_key = 0
+
+    @asynccontextmanager
+    async def connect(self, cm_mac_addr):
+        assoc = Association(self)
+        await assoc._connect(cm_mac_addr)
+        try:
+            yield assoc
+        finally:
+            await assoc._release()
+
+    async def read_implicit(self, slot=0, subslot=0, index=0):
+        req = IODReadReq(seqNum=1, ARUUID=0, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
+        return (await self.rpc(opnum=RPC_IO_OPNUM.ReadImplicit, blocks=[req]))[0]
