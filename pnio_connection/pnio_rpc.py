@@ -329,6 +329,26 @@ RPC_INTERFACE_UUID = {
 }
 
 
+class _PacketListDumpMixin:
+    def build_ps(self, internal=0):
+        p, lst = super().build_ps(internal=internal)
+        out = []
+        for pkt, fields in lst:
+            outfields = []
+            for (field, value, data) in reversed(fields):
+                if isinstance(field, PacketListField):
+                    if outfields:
+                        out.append((pkt, outfields))
+                        outfields = []
+                    for subpkt in getattr(pkt, field.name):
+                        out.extend(subpkt.build_ps(internal=1)[1])
+                else:
+                    outfields.insert(0, (field, value, data))
+            if outfields:
+                out.append((pkt, outfields))
+        return p, out
+
+
 # Generic Block Packet
 class BlockHeader(Packet):
     """Abstract packet to centralize block headers fields"""
@@ -1497,7 +1517,7 @@ class NDRData(Packet):
         raise NotImplementedError()
 
 
-class PNIOServiceReqPDU(Packet):
+class PNIOServiceReqPDU(_PacketListDumpMixin, Packet):
     """PNIO PDU for RPC Request"""
     fields_desc = [
         EField(
@@ -1529,7 +1549,7 @@ class PNIOServiceReqPDU(Packet):
 DceRpc4Payload.register_possible_payload(PNIOServiceReqPDU)
 
 
-class PNIOServiceResPDU(Packet):
+class PNIOServiceResPDU(_PacketListDumpMixin, Packet):
     """PNIO PDU for RPC Response"""
     fields_desc = [
         EField(IntEnumField("status", 0, ["OK"]),

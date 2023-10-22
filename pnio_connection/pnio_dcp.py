@@ -458,6 +458,24 @@ class ProfinetDCP(Packet):
             case (DCP_SERVICE_TYPE.RESPONSE_SUCCESS | DCP_SERVICE_TYPE.RESPONSE_REQUEST_NOT_SUPPORTED), DCP_SERVICE_ID.IDENTIFY:
                 return DCP_IDENTIFY_RESPONSE_FRAME_ID
 
+    def build_ps(self, internal=0):
+        p, lst = super().build_ps(internal=internal)
+        out = []
+        for pkt, fields in lst:
+            outfields = []
+            for (field, value, data) in reversed(fields):
+                if isinstance(field, PacketListField):
+                    if outfields:
+                        out.append((pkt, outfields))
+                        outfields = []
+                    for subpkt in getattr(pkt, field.name):
+                        out.extend(subpkt.build_ps(internal=1)[1])
+                else:
+                    outfields.insert(0, (field, value, data))
+            if outfields:
+                out.append((pkt, outfields))
+        return p, out
+
 class ProfinetDCPIdentifyReq(Packet):
     name = "Profinet DCP-Identify-ReqPDU"
     fields_desc = [
