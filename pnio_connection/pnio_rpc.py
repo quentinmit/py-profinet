@@ -19,7 +19,8 @@ from scapy.fields import BitField, ByteField, BitEnumField, ByteEnumField, \
     ConditionalField, FieldLenField, FieldListField, IntField, IntEnumField, \
     LenField, MACField, PadField, PacketField, PacketListField, \
     ShortEnumField, ShortField, StrFixedLenField, StrLenField, \
-    UUIDField, XByteField, XIntField, XShortEnumField, XShortField
+    UUIDField, XByteField, XIntField, XShortEnumField, XShortField, \
+    LongField
 from scapy.layers.dcerpc import DceRpc4, DceRpc4Payload
 from scapy.contrib.rtps.common_types import EField
 from scapy.compat import bytes_hex
@@ -1213,11 +1214,32 @@ class RealIdentificationDataV1(Block):
 class APIData(Block):
     fields_desc = [
         BlockHeader,
-        FieldLenField("NumberOfAPIs", None, fmt="H", count_of="APIS"),
+        FieldLenField("NumberOfAPIs", None, fmt="H", count_of="APIs"),
         FieldListField("APIs", None, XIntField("API", 0),
                        count_from=lambda p: p.NumberOfAPIs),
     ]
     block_type = 0x001a
+
+class LogEntry(Packet):
+    fields_desc = [
+        LongField("LocalTimeStamp", 0),
+        UUIDField("ARUUID", None),
+        XIntField("PNIOStatus", 0),
+        XIntField("EntryDetail", 0),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class LogData(Block):
+    fields_desc = [
+        BlockHeader,
+        LongField("ActualLocalTimeStamp", 0),
+        FieldLenField("NumberOfLogEntries", None, fmt="H", count_of="Entries"),
+        PacketListField("Entries", [], LogEntry,
+                        count_from=lambda p: p.NumberOfLogEntries),
+    ]
+    block_type = 0x0019
 
 ALARM_CR_TYPE = {
     0x0001: "AlarmCR",
@@ -1482,6 +1504,7 @@ class Alarm_High(Packet):
 PNIO_RPC_BLOCK_ASSOCIATION = {
     ("0013", 1, 0): RealIdentificationDataV0,
     ("0013", 1, 1): RealIdentificationDataV1,
+    "0019": LogData,
     "001a": APIData,
     # I&M Records
     "0020": IM0Block,
