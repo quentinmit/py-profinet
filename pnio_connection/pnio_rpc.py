@@ -1210,6 +1210,15 @@ class RealIdentificationDataV1(Block):
     # default block_type value
     block_type = 0x0013
 
+class APIData(Block):
+    fields_desc = [
+        BlockHeader,
+        FieldLenField("NumberOfAPIs", None, fmt="H", count_of="APIS"),
+        FieldListField("APIs", None, XIntField("API", 0),
+                       count_from=lambda p: p.NumberOfAPIs),
+    ]
+    block_type = 0x001a
+
 ALARM_CR_TYPE = {
     0x0001: "AlarmCR",
 }
@@ -1473,6 +1482,7 @@ class Alarm_High(Packet):
 PNIO_RPC_BLOCK_ASSOCIATION = {
     ("0013", 1, 0): RealIdentificationDataV0,
     ("0013", 1, 1): RealIdentificationDataV1,
+    "001a": APIData,
     # I&M Records
     "0020": IM0Block,
     "0021": IM1Block,
