@@ -1148,6 +1148,68 @@ class ExpectedSubmoduleBlockReq(Block):
         return None  # no response associated (should be modulediffblock)
 
 
+class RealIdentificationDataSubslot(Packet):
+    name = "Subslot"
+    fields_desc = [
+        XShortField("SubslotNumber", 0),
+        XIntField("SubmoduleIdentNumber", 0),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+
+class RealIdentificationDataSlot(Packet):
+    """Description of an API in the expected submodules blocks"""
+    name = "Slot"
+    fields_desc = [
+        XShortField("SlotNumber", 0),
+        XIntField("ModuleIdentNumber", 0),
+        FieldLenField("NumberOfSubslots", None, fmt="H",
+                      count_of="Subslots"),
+        PacketListField("Subslots", [], RealIdentificationDataSubslot,
+                        count_from=lambda p: p.NumberOfSubslots),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+
+class RealIdentificationDataAPI(Packet):
+    """Description of an API in the expected submodules blocks"""
+    name = "API"
+    fields_desc = [
+        XIntField("API", 0),
+        FieldLenField("NumberOfSlots", None, fmt="H",
+                      count_of="Slots"),
+        PacketListField("Slots", [], RealIdentificationDataSlot,
+                        count_from=lambda p: p.NumberOfSlots),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+
+class RealIdentificationDataV0(Block):
+    fields_desc = [
+        BlockHeader,
+        FieldLenField("NumberOfSlots", None, fmt="H", count_of="Slots"),
+        PacketListField("Slots", [], RealIdentificationDataSlot,
+                        count_from=lambda p: p.NumberOfSlots)
+    ]
+    # default block_type value
+    block_type = 0x0013
+
+class RealIdentificationDataV1(Block):
+    fields_desc = [
+        BlockHeader,
+        FieldLenField("NumberOfAPIs", None, fmt="H", count_of="APIs"),
+        PacketListField("APIs", [], RealIdentificationDataAPI,
+                        count_from=lambda p: p.NumberOfAPIs)
+    ]
+    # default block_type value
+    block_type = 0x0013
+
 ALARM_CR_TYPE = {
     0x0001: "AlarmCR",
 }
@@ -1409,6 +1471,8 @@ class Alarm_High(Packet):
 
 # PROFINET IO DCE/RPC PDU
 PNIO_RPC_BLOCK_ASSOCIATION = {
+    ("0013", 1, 0): RealIdentificationDataV0,
+    ("0013", 1, 1): RealIdentificationDataV1,
     # I&M Records
     "0020": IM0Block,
     "0021": IM1Block,
@@ -1471,8 +1535,13 @@ def _guess_block_class(_pkt, *args, **kargs):
     # Common cases
     else:
         btype = bytes_hex(_pkt[:2]).decode("utf8")
-        if btype in PNIO_RPC_BLOCK_ASSOCIATION:
-            cls = PNIO_RPC_BLOCK_ASSOCIATION[btype]
+        cls = PNIO_RPC_BLOCK_ASSOCIATION.get(
+            (btype, _pkt[4], _pkt[5]),
+            PNIO_RPC_BLOCK_ASSOCIATION.get(
+                btype,
+                cls,
+            ),
+        )
 
     return cls(_pkt, *args, **kargs)
 

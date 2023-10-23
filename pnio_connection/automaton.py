@@ -404,7 +404,8 @@ class Association:
 
     async def read(self, slot=0, subslot=0, index=0):
         req = IODReadReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
-        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Read, blocks=[req]))[0]
+        blocks = await self.protocol.rpc(opnum=RPC_IO_OPNUM.Read, blocks=[req])
+        return blocks[1:]
 
     async def write(self, data, slot=0, subslot=0, index=0):
         req = IODWriteReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index) / data
@@ -427,4 +428,5 @@ class ContextManagerProtocol(PnioRpcProtocol):
 
     async def read_implicit(self, slot=0, subslot=0, index=0):
         req = IODReadReq(seqNum=1, ARUUID=0, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
-        return (await self.rpc(opnum=RPC_IO_OPNUM.ReadImplicit, blocks=[req]))[0]
+        blocks = await self.rpc(opnum=RPC_IO_OPNUM.ReadImplicit, blocks=[req])
+        return blocks[1:]
