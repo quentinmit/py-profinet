@@ -800,17 +800,9 @@ class IM4Block(Block):
 
     block_type = 0x0024
 
-
-#     ARBlockRe{q,s}
-class ARBlockReq(Block):
-    """Application relationship block request"""
+class ARProperties(Packet):
+    """Abstract packet to centralize block headers fields"""
     fields_desc = [
-        BlockHeader,
-        XShortEnumField("ARType", 1, AR_TYPE),
-        UUIDField("ARUUID", None),
-        ShortField("SessionKey", 0),
-        MACField("CMInitiatorMacAdd", None),
-        UUIDField("CMInitiatorObjectUUID", None),
         # ARProperties
         BitField("ARProperties_PullModuleAlarmAllowed", 0, 1),
         BitEnumField("ARProperties_StartupMode", 0, 1,
@@ -827,6 +819,22 @@ class ARBlockReq(Block):
                      ["External_PrmServer", "CM_Initiator"]),
         BitField("ARProperties_SupervisorTakeoverAllowed", 0, 1),
         BitEnumField("ARProperties_State", 1, 3, {1: "Active"}),
+    ]
+
+    def __new__(cls, name, bases, dct):
+        raise NotImplementedError()
+
+#     ARBlockRe{q,s}
+class ARBlockReq(Block):
+    """Application relationship block request"""
+    fields_desc = [
+        BlockHeader,
+        XShortEnumField("ARType", 1, AR_TYPE),
+        UUIDField("ARUUID", None),
+        ShortField("SessionKey", 0),
+        MACField("CMInitiatorMacAdd", None),
+        UUIDField("CMInitiatorObjectUUID", None),
+        ARProperties,
         ShortField("CMInitiatorActivityTimeoutFactor", 1000),
         ShortField("CMInitiatorUDPRTPort", 0x8892),
         FieldLenField("StationNameLength", None, fmt="H",
@@ -1241,6 +1249,47 @@ class LogData(Block):
     ]
     block_type = 0x0019
 
+class APDUStatus(Packet):
+    fields_desc = [
+        XShortField("CycleCnt", 0),
+        BitField("DataStatus_reserved2", 0, 2),
+        BitEnumField("DataStatus_StationProblemIndicator", 1, 1,
+                     ["Problem", "Normal"]),
+        BitEnumField("DataStatus_ProviderState", 1, 1,
+                     ["Stop", "Run"]),
+        BitEnumField("DataStatus_DataValid", 1, 1,
+                     ["Invalid", "Valid"]),
+        BitField("DataStatus_reserved1", 0, 1),
+        BitEnumField("DataStatus_State", 1, 1,
+                     ["Backup", "Primary"]),
+        BitField("TransferStatus_reserved", 0, 4),
+        BitField("TransferStatus_IRTError", 0, 1),
+        BitField("TransferStatus_MACReceiveBufferOverflow", 0, 1),
+        BitField("TransferStatus_WrongLengthError", 0, 1),
+        BitField("TransferStatus_AlignmentOrFrameChecksumError", 0, 1),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class ARDataIOCR(Packet):
+    fields_desc = [
+        XShortEnumField("IOCRType", 1, IOCR_TYPE),
+        # IOCRProperties
+        BitField("IOCRProperties_reserved3", 0, 8),
+        BitField("IOCRProperties_reserved2", 0, 11),
+        BitField("IOCRProperties_reserved1", 0, 9),
+        BitEnumField("IOCRProperties_RTClass", 0, 4,
+                     IOCR_BLOCK_REQ_IOCR_PROPERTIES),
+        XShortField("FrameID", 0x8000),
+        APDUStatus,
+        ShortField("InitiatorUDPRTPort", 0x8892),
+        ShortField("ResponderUDPRTPort", 0x8892),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
 ALARM_CR_TYPE = {
     0x0001: "AlarmCR",
 }
@@ -1249,6 +1298,45 @@ ALARM_CR_TRANSPORT = {
     0x0: "RTA_CLASS_1",
     0x1: "RTA_CLASS_UDP"
 }
+
+class ARDataV0AR(Packet):
+    fields_desc = [
+        UUIDField("ARUUID", None),
+        XShortEnumField("ARType", 1, AR_TYPE),
+        ARProperties,
+        UUIDField("CMInitiatorObjectUUID", None),
+        FieldLenField("CMInitiatorStationNameLength", None, fmt="H",
+                      length_of="CMInitiatorStationName"),
+        StrLenField("CMInitiatorStationName", "",
+                    length_from=lambda pkt: pkt.CMInitiatorStationNameLength),
+        FieldLenField("NumberOfIOCRs", None, fmt="H",
+                      count_of="IOCRs"),
+        PacketListField("IOCRs", [], ARDataIOCR,
+                        count_from=lambda p: p.NumberOfIOCRs),
+        XShortEnumField("AlarmCRType", 1, ALARM_CR_TYPE),
+        ShortField("LocalAlarmReference", 0x0003),
+        ShortField("RemoteAlarmReference", 0x0003),
+        UUIDField("ParameterServerObjectUUID", 0),
+        FieldLenField("ParameterServerStationNameLength", None, fmt="H",
+                      length_of="ParameterServerStationName"),
+        StrLenField("ParameterServerStationName", "",
+                    length_from=lambda pkt: pkt.ParameterServerStationNameLength),
+        FieldLenField("NumberOfAPIs", None, fmt="H", count_of="APIs"),
+        FieldListField("APIs", None, XIntField("API", 0),
+                       count_from=lambda p: p.NumberOfAPIs),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class ARDataV0(Block):
+    fields_desc = [
+        BlockHeader,
+        FieldLenField("NumberOfARs", None, fmt="H", count_of="ARs"),
+        PacketListField("ARs", [], ARDataV0AR,
+                        count_from=lambda p: p.NumberOfARs),
+    ]
+    block_type = 0x0018
 
 
 class AlarmCRBlockReq(Block):
@@ -1504,6 +1592,7 @@ class Alarm_High(Packet):
 PNIO_RPC_BLOCK_ASSOCIATION = {
     ("0013", 1, 0): RealIdentificationDataV0,
     ("0013", 1, 1): RealIdentificationDataV1,
+    ("0018", 1, 0): ARDataV0,
     "0019": LogData,
     "001a": APIData,
     # I&M Records
