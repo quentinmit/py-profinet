@@ -11,7 +11,6 @@ from typing import Any, Optional
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
-from scapy.supersocket import StreamSocket
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
 from .pnio_rpc import AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot
 from scapy.automaton import Automaton, ATMT
@@ -109,64 +108,10 @@ class PNIOClient(Automaton):
         if pkt.haslayer(ProfinetDCPSetRes) and pkt[ProfinetDCP].xid == self.identify_req[ProfinetDCP].xid:
             raise self.EXCHANGE_CONFIGURATION()
 
-class PNIORPCClient(Automaton):
-    def READ(self):
-        auuid = 0
-        r = (
-            DceRpc4(
-                flags1=["no_frag_ack", "idempotent"],
-                opnum=RPC_IO_OPNUM.ReadImplicit,
-            )
-            / PNIOServiceReqPDU(blocks=[
-                IODReadReq(
-                    seqNum=1,
-                    ARUUID=auuid,
-                    API=0x0,
-                    slotNumber=0x0,
-                    subslotNumber=2,
-                    index=17,
-                ),
-            ])
-        )
 
 class debug:
     recv = PacketList([], "Received")
     sent = PacketList([], "Sent")
-
-class RpcSocket(StreamSocket):
-    def __init__(self, dst_host):
-        port = socket.getservbyname("profinet-cm")
-        self.dst_addr = (dst_host, port)
-        self.seqnum = 0
-        self.serial_number = 0
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('0.0.0.0', 0)) # Random port
-        super().__init__(sock, DceRpc4)
-
-    def send(self, x):
-        sx = bytes(x)
-        try:
-            x.sent_time = time.time()
-        except AttributeError:
-            pass
-        if self.outs:
-            return self.outs.sendto(sx, self.dst_addr)
-        return 0
-
-    def get_header(self, opnum, seqnum=None):
-        if seqnum is None:
-            seqnum = self.seqnum
-            self.seqnum += 1
-        serial_number = self.serial_number
-        self.serial_number += 1
-        return DceRpc4(
-            flags1=["no_frag_ack", "idempotent"],
-            opnum=opnum,
-            seqnum=seqnum,
-            fragnum=0, # TODO: Support fragmentation
-            serial_hi=(serial_number >> 8) & 0xFF,
-            serial_lo=serial_number & 0xFF
-        )
 
 LOGGER = logging.getLogger("profinet")
 
