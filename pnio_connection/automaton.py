@@ -13,7 +13,7 @@ from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
 from scapy.supersocket import StreamSocket
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import Block, ARBlockReq, RPC_IO_OPNUM, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU
+from .pnio_rpc import AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot
 from scapy.automaton import Automaton, ATMT
 from scapy.interfaces import resolve_iface
 from scapy.config import conf
@@ -177,11 +177,14 @@ class DceRpcError(Exception):
     def __str__(self):
         return _DCE_RPC_ERROR_CODES.get(self.code, hex(self.code))
 
+PF_CMRPC_MUST_RECV_FRAG_SIZE = 1464
+
 class DceRpcProtocol(DatagramProtocol):
     def __init__(self, dst_host):
         port = socket.getservbyname("profinet-cm")
         self.dst_addr = (dst_host, port)
         self.seqnum = 0
+        self.activity_uuid = uuid.uuid4()
         self.serial_number = 0
         self.pending_requests = dict()
         super().__init__()
@@ -194,6 +197,7 @@ class DceRpcProtocol(DatagramProtocol):
         self.serial_number += 1
         return DceRpc4(
             flags1=["no_frag_ack", "idempotent"],
+            act_id=self.activity_uuid,
             opnum=opnum,
             seqnum=seqnum,
             fragnum=0, # TODO: Support fragmentation
@@ -206,6 +210,7 @@ class DceRpcProtocol(DatagramProtocol):
         if object is not None:
             req.object = object
         req = req / pdu
+        assert len(req) <= PF_CMRPC_MUST_RECV_FRAG_SIZE
         fut = get_running_loop().create_future()
         self.pending_requests[req.seqnum] = fut
         LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
@@ -375,7 +380,7 @@ class Association:
         protocol.session_key += 1
         self.aruuid = uuid.uuid4()
 
-    async def _connect(self, cm_mac_addr):
+    async def _connect(self, cm_mac_addr, easy_supervisor=False, extra_blocks=[]):
         ar_block_req = ARBlockReq(
             ARUUID=self.aruuid,
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
@@ -383,15 +388,21 @@ class Association:
             # in big endian, the last part is u16 instance, u16 device, u16 vendor
             CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-00000000f000",
             CMInitiatorStationName="py-profinet",
-            ARProperties_DeviceAccess=0,
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
             ARProperties_ParameterizationServer="CM_Initiator",
         )
+        if easy_supervisor:
+            ar_block_req.ARType="IOSAR"
+            ar_block_req.ARProperties_DeviceAccess=1
+
+        # TODO: Configure alarm block?
+        alarm_block_req = AlarmCRBlockReq()
         res = await self.protocol.rpc(
             opnum=RPC_IO_OPNUM.Connect,
             blocks=[
                 ar_block_req,
-            ],
+                alarm_block_req,
+            ] + extra_blocks,
         )
         # Success!
         return res
@@ -418,9 +429,9 @@ class ContextManagerProtocol(PnioRpcProtocol):
         self.session_key = 0
 
     @asynccontextmanager
-    async def connect(self, cm_mac_addr):
+    async def connect(self, cm_mac_addr, extra_blocks=[]):
         assoc = Association(self)
-        await assoc._connect(cm_mac_addr)
+        await assoc._connect(cm_mac_addr, extra_blocks=extra_blocks)
         try:
             yield assoc
         finally:
@@ -430,3 +441,44 @@ class ContextManagerProtocol(PnioRpcProtocol):
         req = IODReadReq(seqNum=1, ARUUID=0, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
         blocks = await self.rpc(opnum=RPC_IO_OPNUM.ReadImplicit, blocks=[req])
         return blocks[1:]
+
+    async def generate_expected_submodules(self):
+        id_data = (await self.read_implicit(0, 0, 0xF000))[0]
+        blocks = []
+        for api in id_data.APIs:
+            for slot in api.Slots:
+                submodules = []
+                for subslot in slot.Subslots or [RealIdentificationDataSubslot(
+                        SubslotNumber=1,
+                        SubmoduleIdentNumber=0,
+                )]:
+                    submodules.append(ExpectedSubmodule(
+                        SubslotNumber=subslot.SubslotNumber,
+                        SubmoduleIdentNumber=subslot.SubmoduleIdentNumber,
+                        SubmoduleProperties_Type="INPUT_OUTPUT",
+                        DataDescription=[
+                            ExpectedSubmoduleDataDescription(
+                                DataDescription="Input",
+                                LengthIOCS=1,
+                                LengthIOPS=1,
+                                SubmoduleDataLength=0,
+                            ),
+                            ExpectedSubmoduleDataDescription(
+                                DataDescription="Output",
+                                LengthIOCS=1,
+                                LengthIOPS=1,
+                                SubmoduleDataLength=0,
+                            ),
+                        ],
+                    ))
+                blocks.append(ExpectedSubmoduleBlockReq(
+                    NumberOfAPIs=1,
+                    APIs=[
+                        ExpectedSubmoduleAPI(
+                            SlotNumber=slot.SlotNumber,
+                            ModuleIdentNumber=slot.ModuleIdentNumber,
+                            Submodules=submodules,
+                        ),
+                    ],
+                ))
+        return blocks
