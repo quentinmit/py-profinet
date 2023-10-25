@@ -20,6 +20,7 @@ class DataType(Enum):
             return 2
         if self == self.Unsigned32:
             return 4
+        raise ValueError("unknown data type")
 
 @dataclass
 class DataItem:
@@ -34,12 +35,25 @@ class Submodule:
     input_data: list[DataItem] = field(default_factory=list)
     output_data: list[DataItem] = field(default_factory=list)
 
+    @property
+    def input_length(self):
+        return sum(d.data_type.size for d in self.input_data)
+
+    @property
+    def output_length(self):
+        return sum(d.data_type.size for d in self.output_data)
+
 @dataclass
 class Module:
     id: str
     ident: int
     slots: frozenset[int]
     submodules: list[Submodule]
+
+    def get_submodule(self, id):
+        for submodule in self.submodules:
+            if submodule.id == id:
+                return submodule
 
 def parse_dataitem(el: Element) -> DataItem:
     return DataItem(
@@ -108,6 +122,11 @@ class GSDML:
                 submodules=submodules(module),
             ))
         self.modules = modules
+
+    def get_module(self, id):
+        for module in self.modules:
+            if module.id == id:
+                return module
 
 if __name__ == "__main__":
     print(GSDML(sys.argv[1]))
