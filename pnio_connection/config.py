@@ -2,7 +2,7 @@ import os.path
 import yaml
 
 from .gsdml import GSDML, Module
-from .pnio_rpc import ExpectedSubmodule, ExpectedSubmoduleAPI, ExpectedSubmoduleBlockReq, IOCRAPIObject, IOCRAPI, IOCRBlockReq
+from .pnio_rpc import ExpectedSubmodule, ExpectedSubmoduleAPI, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, IOCRAPIObject, IOCRAPI, IOCRBlockReq
 
 class ConfigReader:
     def __init__(self, path: str):
@@ -17,9 +17,11 @@ class ConfigReader:
         input_iocs_objects = []
         output_api_objects = []
         output_iocs_objects = []
+        expected_submodule_api_objects = []
 
         for slot, module in sorted(self.config["slots"].items()):
             g_module = self.gsdml.get_module(module["id"])
+            expected_submodules = []
             for subslot, submodule in sorted(module.get("subslots", {
                     1: {
                         "id": g_module.submodules[0].id,
@@ -53,6 +55,38 @@ class ConfigReader:
                         FrameOffset=input_frame_offset,
                     ))
                     input_frame_offset += 1
+                data_description = []
+                if g_submodule.input_length or not g_submodule.output_length:
+                    data_description.append(
+                        ExpectedSubmoduleDataDescription(
+                            DataDescription="Input",
+                            LengthIOCS=1,
+                            LengthIOPS=1,
+                            SubmoduleDataLength=g_submodule.input_length,
+                        )
+                    )
+                if g_submodule.output_length:
+                    data_description.append(
+                        ExpectedSubmoduleDataDescription(
+                            DataDescription="Output",
+                            LengthIOCS=1,
+                            LengthIOPS=1,
+                            SubmoduleDataLength=g_submodule.output_length,
+                        )
+                    )
+                expected_submodules.append(
+                    ExpectedSubmodule(
+                        SubmoduleIdentNumber=g_submodule.ident,
+                        SubslotNumber=subslot,
+                        SubmoduleProperties_Type=("INPUT_OUTPUT" if len(data_description) == 2 else ("OUTPUT" if g_submodule.output_length else "INPUT")),
+                        DataDescription=data_description,
+                    )
+                )
+            expected_submodule_api_objects.append(ExpectedSubmoduleAPI(
+                SlotNumber=slot,
+                ModuleIdentNumber=g_module.ident,
+                Submodules=expected_submodules,
+            ))
         return [
             IOCRBlockReq(
                 IOCRProperties_RTClass=0x2,
@@ -83,4 +117,11 @@ class ConfigReader:
                     ),
                 ],
             ),
+        ] + [
+            ExpectedSubmoduleBlockReq(
+                APIs=[
+                    a
+                ]
+            )
+            for a in expected_submodule_api_objects
         ]
