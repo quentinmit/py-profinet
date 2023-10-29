@@ -1822,18 +1822,18 @@ class FloorUUID(Packet):
 
 class Floor(Packet):
     fields_desc = [
-        LEFieldLenField("LHSByteCount", None, fmt="H", length_of="LHS", adjust=lambda v: v+1),
+        LEFieldLenField("LHSByteCount", None, fmt="<H", length_of="LHS", adjust=lambda v: v+1),
         ByteField("ProtocolID", None),
         XStrFixedLenField("LHS", None, length_from=lambda p: p.LHSByteCount-1),
-        LEFieldLenField("RHSByteCount", None, fmt="H", length_of="RHS"),
-        XStrFixedLenField("RHS", None, length_from=lambda p: p.RHSByteCount-1),
+        LEFieldLenField("RHSByteCount", None, fmt="<H", length_of="RHS"),
+        XStrFixedLenField("RHS", None, length_from=lambda p: p.RHSByteCount),
     ]
 
     def extract_padding(self, s):
         return None, s  # No extra payload
 
     @classmethod
-    def dispatch_hook(cls, _pkt=None):
+    def dispatch_hook(cls, _pkt=None, *args, **kwargs):
         if _pkt and len(_pkt) >= 3:
             proto = _pkt[2]
             if proto == 0x08:
