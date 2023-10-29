@@ -20,9 +20,10 @@ from scapy.fields import BitField, ByteField, BitEnumField, ByteEnumField, \
     LenField, MACField, PadField, PacketField, PacketListField, \
     ShortEnumField, ShortField, StrFixedLenField, StrLenField, \
     UUIDField, XByteField, XIntField, XShortEnumField, XShortField, \
-    LongField
+    LongField, LEFieldLenField, PacketLenField, XStrFixedLenField, \
+    LEShortField, IPField
 from scapy.layers.dcerpc import DceRpc4, DceRpc4Payload
-from scapy.contrib.rtps.common_types import EField
+from scapy.contrib.rtps.common_types import EField, EPacket, EPacketListField
 from scapy.compat import bytes_hex
 from scapy.volatile import RandUUID
 
@@ -327,6 +328,10 @@ RPC_INTERFACE_UUID = {
         UUID("dea00003-6c97-11d1-8271-00a02442df7d"),
     "UUID_IO_ParameterServerInterface":
         UUID("dea00004-6c97-11d1-8271-00a02442df7d"),
+    "UUID_RPC_EndpointMapperInterface":
+        UUID("e1af8308-5d1f-11c9-91a4-08002b14a0fa"),
+    "UUID_NDR":
+        UUID("8a885d04-1ceb-11c9-9fe8-08002b104860"),
 }
 
 
@@ -1707,6 +1712,228 @@ class NDRData(Packet):
     def __new__(cls, name, bases, dct):
         raise NotImplementedError()
 
+class NDREPMapLookupReq(Packet):
+    fields_desc = [
+        EField(
+            IntEnumField("InquiryType", 0, [
+                "READ_ALL_REGISTERED_INTERFACES",
+                "READ_ALL_OBJECTS_FOR_ONE_INTERFACE",
+                "PF_RPC_INQUIRY_READ_ALL_INTERFACES_INCLUDING_OBJECTS",
+                "PF_RPC_INQUIRY_READ_ONE_INTERFACE_WITH_ONE_OBJECT",
+            ]),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("ObjectReference", 1),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            UUIDField("ObjectUUID", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("InterfaceReference", 2),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            UUIDField("InterfaceUUID", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            ShortField("InterfaceVersionMajor", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            ShortField("InterfaceVersionMinor", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("VersionOption", 1),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("EntryHandleAttribute", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            UUIDField("EntryHandleUUID", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("MaxEntries", 1),
+            endianness_from=dce_rpc_endianess,
+        ),
+    ]
+    overload_fields = {
+        DceRpc4: {
+            "object": UUID(int=0),
+            "if_id": RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"],
+            # Request DCE/RPC type
+            "ptype": 0,
+        },
+    }
+
+    @classmethod
+    def can_handle(cls, pkt, rpc):
+        """heuristic guess_payload_class"""
+        # type = 0 => request
+        if rpc.ptype == 0 and \
+           rpc.if_id == RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"]:
+            return True
+        return False
+
+
+DceRpc4Payload.register_possible_payload(NDREPMapLookupReq)
+
+class FloorUDP(Packet):
+    fields_desc = [
+        LEShortField("LHSByteCount", 1),
+        ByteField("ProtocolID", 0x08),
+        LEShortField("RHSByteCount", 2),
+        ShortField("Port", None),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class FloorIP(Packet):
+    fields_desc = [
+        LEShortField("LHSByteCount", 1),
+        ByteField("ProtocolID", 0x09),
+        LEShortField("RHSByteCount", 2),
+        IPField("IP", None),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class FloorUUID(Packet):
+    fields_desc = [
+        LEShortField("LHSByteCount", 19),
+        ByteField("ProtocolID", 0x0d),
+        UUIDField("UUID", None),
+        LEShortField("MajorVersion", 1),
+        LEShortField("RHSByteCount", 2),
+        LEShortField("MinorVersion", 0),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+class Floor(Packet):
+    fields_desc = [
+        LEFieldLenField("LHSByteCount", None, fmt="H", length_of="LHS", adjust=lambda v: v+1),
+        ByteField("ProtocolID", None),
+        XStrFixedLenField("LHS", None, length_from=lambda p: p.LHSByteCount-1),
+        LEFieldLenField("RHSByteCount", None, fmt="H", length_of="RHS"),
+        XStrFixedLenField("RHS", None, length_from=lambda p: p.RHSByteCount-1),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+    @classmethod
+    def dispatch_hook(cls, _pkt=None):
+        if _pkt and len(_pkt) >= 3:
+            proto = _pkt[2]
+            if proto == 0x08:
+                return FloorUDP
+            elif proto == 0x09:
+                return FloorIP
+            #elif proto == 0x0a:
+            #    return FloorProtocolConnectionless
+            elif proto == 0x0d:
+                return FloorUUID
+        return Floor
+
+class Tower(Packet):
+    fields_desc = [
+        FieldLenField("FloorCount", None, fmt="<H", count_of="Floors"),
+        PacketListField("Floors", [], Floor, count_from=lambda p: p.FloorCount),
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+
+class NDREPMapLookupEntry(EPacket):
+    fields_desc = [
+        EField(UUIDField("ObjectUUID", 0)),
+        EField(IntField("TowerReference", 3)),
+        EField(IntField("AnnotationOffset", 0)),
+        EField(FieldLenField("AnnotationLength", None, fmt="I", length_of="Annotation")),
+        # Annotation = DeviceType, Blank, OrderID, Blank, HWRevision, Blank, SWRevisionPrefix, SWRevision, EndTerm
+        EField(StrLenField("Annotation", None, length_from=lambda p: p.AnnotationLength)),
+        EField(FieldLenField("TowerLength", None, fmt="I", length_of="Tower")),
+        EField(FieldLenField("TowerOctetStringLength", None, fmt="I", length_of="Tower")),
+        PacketLenField("Tower", None, cls=Tower, length_from=lambda p: p.TowerLength)
+    ]
+
+    def extract_padding(self, s):
+        return None, s  # No extra payload
+
+
+class NDREPMapLookupRes(Packet):
+    fields_desc = [
+        EField(
+            IntField("EntryHandleAttribute", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            UUIDField("EntryHandleUUID", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            FieldLenField("NumberOfEntries", None, fmt="I", count_of="Entries"),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("MaxEntries", 1),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            IntField("EntriesOffset", 0),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EField(
+            FieldLenField("EntriesCount", None, fmt="I", count_of="Entries"),
+            endianness_from=dce_rpc_endianess,
+        ),
+        EPacketListField(
+            "Entries",
+            [],
+            NDREPMapLookupEntry,
+            endianness_from=dce_rpc_endianess,
+            count_from=lambda p: p.NumberOfEntries,
+        ),
+        EField(
+            IntEnumField("Status", 0, {
+                0x0: "RPC_OKAY",
+                0x16C9A0D6: "ENDPOINT_NOT_REGISTERED"
+            }),
+            endianness_from=dce_rpc_endianess,
+        ),
+    ]
+    overload_fields = {
+        DceRpc4: {
+            "object": UUID(int=0),
+            "if_id": RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"],
+            # Request DCE/RPC type
+            "ptype": 0,
+        },
+    }
+
+    @classmethod
+    def can_handle(cls, pkt, rpc):
+        """heuristic guess_payload_class"""
+        # type = 2 => response
+        if rpc.ptype == 2 and \
+           rpc.if_id == RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"]:
+            return True
+        return False
+
+
+DceRpc4Payload.register_possible_payload(NDREPMapLookupRes)
 
 class PNIOServiceReqPDU(_PacketListDumpMixin, Packet):
     """PNIO PDU for RPC Request"""

@@ -12,7 +12,7 @@ from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot
+from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.automaton import Automaton, ATMT
 from scapy.interfaces import resolve_iface
 from scapy.config import conf
@@ -32,6 +32,22 @@ from .pnio_dcp import (
 
 ETHERTYPE_PROFINET=0x8892
 MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
+
+RPC_EPM_INTERFACE_UUID = uuid.UUID("e1af8308-5d1f-11c9-91a4-08002b14a0fa")
+
+# void ept_lookup(
+#     [in]            handle_t            h,
+#     [in]            unsigned32          inquiry_type,
+#     [in]            uuid_p_t            object,
+#     [in]            rpc_if_id_p_t       interface_id,
+#     [in]            unsigned32          vers_option,
+#     [in, out]       ept_lookup_handle_t *entry_handle,
+#     [in]            unsigned32          max_ents,
+#     [out]           unsigned32          *num_ents,
+#     [out, length_is(*num_ents), size_is(max_ents)]
+#                     ept_entry_t         entries[],
+#     [out]           error_status_t      *status
+# );
 
 class PNIOClient(Automaton):
     def __init__(self, *args, **kwargs):
@@ -149,6 +165,23 @@ class DceRpcProtocol(DatagramProtocol):
             serial_hi=(serial_number >> 8) & 0xFF,
             serial_lo=serial_number & 0xFF
         )
+
+    async def list_endpoints(self):
+        handle_attribute = 0
+        handle_uuid = uuid.UUID(int=0)
+        endpoints = []
+        while True:
+            res = await self.call_rpc(
+                opnum=2, pdu=NDREPMapLookupReq(
+                    InterfaceUUID=RPC_INTERFACE_UUID["UUID_IO_DeviceInterface"],
+                    EntryHandleAttribute=handle_attribute,
+                    EntryHandleUUID=handle_uuid,
+                ),
+            )
+            if res.Status == 0x16c9a0d6:
+                return endpoints
+            endpoints.extend(res.Entries)
+            handle_attribute, handle_uuid = res.EntryHandleAttribute, res.EntryHandleUUID
 
     async def call_rpc(self, opnum: int, pdu: Packet, object: Optional[uuid.UUID] = None):
         req = self._get_header(opnum)
@@ -285,7 +318,7 @@ class PnioRpcProtocol(DceRpcProtocol):
         # TODO: Set automatically
         # in big endian, u16 instance, u16 device, u16 vendor
         # VendorID="0x00B0" DeviceID="0x015F"
-        object = "dea00000-6c97-11d1-8271-0000015f00b0"
+        object = "dea00000-6c97-11d1-8271-0001015f00b0"
         res = await self.call_rpc(
             opnum=opnum,
             pdu=PNIOServiceReqPDU(
@@ -333,6 +366,7 @@ class Association:
             # in big endian, the last part is u16 instance, u16 device, u16 vendor
             CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-00000000f000",
             CMInitiatorStationName="py-profinet",
+            CMInitiatorActivityTimeoutFactor=1000,
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
             ARProperties_ParameterizationServer="CM_Initiator",
         )
@@ -371,12 +405,12 @@ class ContextManagerProtocol(PnioRpcProtocol):
     def __init__(self, dst_host):
         super().__init__(dst_host=dst_host)
         self.aruuid = 0
-        self.session_key = 0
+        self.session_key = 1
 
     @asynccontextmanager
-    async def connect(self, cm_mac_addr, extra_blocks=[]):
+    async def connect(self, **kwargs):
         assoc = Association(self)
-        await assoc._connect(cm_mac_addr, extra_blocks=extra_blocks)
+        await assoc._connect(**kwargs)
         try:
             yield assoc
         finally:
