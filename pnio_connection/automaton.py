@@ -205,11 +205,19 @@ class DceRpcProtocol(DatagramProtocol):
         assert len(req) <= PF_CMRPC_MUST_RECV_FRAG_SIZE
         fut = get_running_loop().create_future()
         self.pending_requests[req.seqnum] = fut
-        LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
-        if conf.debug_match:
-            debug.sent.append(req)
-        req.sent_time = req.time = time.time()
         dst_addr = await self._get_addr_for_interface(req.if_id)
+        LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
+        req.sent_time = req.time = time.time()
+        if conf.debug_match:
+            from scapy.layers.inet import IP, UDP
+            src_addr = self.transport.get_extra_info('sockname', (None, None))
+            p = (
+                IP(src=src_addr[0], dst=dst_addr[0])
+                / UDP(sport=src_addr[1], dport=dst_addr[1])
+                / req
+            )
+            p.time = req.time
+            debug.sent.append(p)
         self.transport.sendto(bytes(req), dst_addr)
         # TODO: Timeout?
         # TODO: Retries
@@ -226,7 +234,7 @@ class DceRpcProtocol(DatagramProtocol):
         LOGGER.info("connection made: %s", transport)
         self.transport = transport
         return super().connection_made(transport)
-    def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
+    def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
         # TODO: Consider switching to recvmsg
         try:
             pkt = DceRpc4(data)
@@ -236,7 +244,15 @@ class DceRpcProtocol(DatagramProtocol):
         pkt.time = time.time()
         LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
         if conf.debug_match:
-            debug.recv.append(pkt)
+            from scapy.layers.inet import IP, UDP
+            dst_addr = self.transport.get_extra_info('sockname', (None, None))
+            p = (
+                IP(src=src_addr[0], dst=dst_addr[0])
+                / UDP(sport=src_addr[1], dport=dst_addr[1])
+                / pkt
+            )
+            p.time = pkt.time
+            debug.recv.append(p)
         # TODO: Ack?
         # TODO: Error handling?
         # TODO: Check packet type?

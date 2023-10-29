@@ -1768,6 +1768,7 @@ class NDREPMapLookupReq(Packet):
         DceRpc4: {
             "object": UUID(int=0),
             "if_id": RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"],
+            "if_vers": 3,
             # Request DCE/RPC type
             "ptype": 0,
         },
@@ -1918,6 +1919,7 @@ class NDREPMapLookupRes(Packet):
         DceRpc4: {
             "object": UUID(int=0),
             "if_id": RPC_INTERFACE_UUID["UUID_RPC_EndpointMapperInterface"],
+            "if_vers": 3,
             # Request DCE/RPC type
             "ptype": 0,
         },
