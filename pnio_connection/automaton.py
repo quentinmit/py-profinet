@@ -6,7 +6,7 @@ import random
 import time
 import socket
 import uuid
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from scapy.packet import Packet
 from scapy.plist import PacketList
@@ -142,12 +142,14 @@ PF_CMRPC_MUST_RECV_FRAG_SIZE = 1464
 
 class DceRpcProtocol(DatagramProtocol):
     def __init__(self, dst_host):
+        self.dst_host = dst_host
         port = socket.getservbyname("profinet-cm")
-        self.dst_addr = (dst_host, port)
+        self.default_port = port
         self.seqnum = 0
         self.activity_uuid = uuid.uuid4()
         self.serial_number = 0
         self.pending_requests = dict()
+        self.endpoints_by_interface = None
         super().__init__()
 
     def _get_header(self, opnum, seqnum=None):
@@ -183,6 +185,18 @@ class DceRpcProtocol(DatagramProtocol):
             endpoints.extend(res.Entries)
             handle_attribute, handle_uuid = res.EntryHandleAttribute, res.EntryHandleUUID
 
+    async def _get_addr_for_interface(self, if_id: uuid.UUID) -> Tuple[str, int]:
+        if self.endpoints_by_interface is None:
+            # N.B. By starting with a blank dict, the initial load will do
+            # call_rpc -> _get_addr_for_interface -> call_rpc ->
+            # _get_addr_for_interface -> return default
+            self.endpoints_by_interface = dict()
+            for entry in await self.list_endpoints():
+                self.endpoints_by_interface[
+                    entry.Tower.Floors[0].UUID
+                ] = (entry.Tower.Floors[4].IP, entry.Tower.Floors[3].Port)
+        return self.endpoints_by_interface.get(if_id, (self.dst_host, self.default_port))
+
     async def call_rpc(self, opnum: int, pdu: Packet, object: Optional[uuid.UUID] = None):
         req = self._get_header(opnum)
         if object is not None:
@@ -195,7 +209,8 @@ class DceRpcProtocol(DatagramProtocol):
         if conf.debug_match:
             debug.sent.append(req)
         req.sent_time = req.time = time.time()
-        self.transport.sendto(bytes(req), self.dst_addr)
+        dst_addr = await self._get_addr_for_interface(req.if_id)
+        self.transport.sendto(bytes(req), dst_addr)
         # TODO: Timeout?
         # TODO: Retries
         res = await fut

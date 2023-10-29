@@ -1811,7 +1811,7 @@ class FloorUUID(Packet):
     fields_desc = [
         LEShortField("LHSByteCount", 19),
         ByteField("ProtocolID", 0x0d),
-        UUIDField("UUID", None),
+        EField(UUIDField("UUID", None), endianness="<"),
         LEShortField("MajorVersion", 1),
         LEShortField("RHSByteCount", 2),
         LEShortField("MinorVersion", 0),
