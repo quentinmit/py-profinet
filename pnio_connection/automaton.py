@@ -256,6 +256,7 @@ class DceRpcProtocol(DatagramProtocol):
         # TODO: Ack?
         # TODO: Error handling?
         # TODO: Check packet type?
+        # TODO: Handle multiple response packets?
         if fut := self.pending_requests.get(pkt.seqnum):
             fut.set_result(pkt)
             del self.pending_requests[pkt.seqnum]
@@ -395,7 +396,8 @@ class Association:
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
             CMInitiatorMacAdd=cm_mac_addr,
             # in big endian, the last part is u16 instance, u16 device, u16 vendor
-            CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-00000000f000",
+            CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-006400f9002a", # FIXME: Needed?
+            #CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-00000000f000",
             CMInitiatorStationName="py-profinet",
             CMInitiatorActivityTimeoutFactor=1000,
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
@@ -404,15 +406,15 @@ class Association:
         if easy_supervisor:
             ar_block_req.ARType="IOSAR"
             ar_block_req.ARProperties_DeviceAccess=1
-
-        # TODO: Configure alarm block?
-        alarm_block_req = AlarmCRBlockReq()
+        blocks = [ar_block_req]
+        if not easy_supervisor:
+            # TODO: Configure alarm block?
+            alarm_block_req = AlarmCRBlockReq()
+            blocks.append(alarm_block_req)
+        blocks.extend(extra_blocks)
         res = await self.protocol.rpc(
             opnum=RPC_IO_OPNUM.Connect,
-            blocks=[
-                ar_block_req,
-                alarm_block_req,
-            ] + extra_blocks,
+            blocks=blocks,
         )
         # Success!
         return res
