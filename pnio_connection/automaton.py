@@ -13,7 +13,6 @@ from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
 from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
-from scapy.automaton import Automaton, ATMT
 from scapy.interfaces import resolve_iface
 from scapy.config import conf
 from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
@@ -35,94 +34,60 @@ MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
 
 RPC_EPM_INTERFACE_UUID = uuid.UUID("e1af8308-5d1f-11c9-91a4-08002b14a0fa")
 
-# void ept_lookup(
-#     [in]            handle_t            h,
-#     [in]            unsigned32          inquiry_type,
-#     [in]            uuid_p_t            object,
-#     [in]            rpc_if_id_p_t       interface_id,
-#     [in]            unsigned32          vers_option,
-#     [in, out]       ept_lookup_handle_t *entry_handle,
-#     [in]            unsigned32          max_ents,
-#     [out]           unsigned32          *num_ents,
-#     [out, length_is(*num_ents), size_is(max_ents)]
-#                     ept_entry_t         entries[],
-#     [out]           error_status_t      *status
-# );
 
-class PNIOClient(Automaton):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, ll=conf.L2socket, **kwargs)
+class RTProtocol(DatagramProtocol):
+    def connection_made(self, transport: DatagramTransport) -> None:
+        LOGGER.info("connection made: %s", transport)
+        self.transport = transport
+        return super().connection_made(transport)
 
-    def parse_args(self, iface, name_of_station, ip, netmask, gateway, *args, **kwargs):
-        super().parse_args(*args, iface=iface, type=ETHERTYPE_PROFINET, **kwargs)
-        self.name_of_station = name_of_station
-        self.ip = ip
-        self.netmask = netmask
-        self.gateway = gateway
-        self.iface = resolve_iface(iface)
-        self.src_mac = self.iface.mac
-
-    @ATMT.state(initial=1)
-    def IDENTIFY_REQ(self):
-        # Discover the device with LLDP
-        # https://www.rapid7.com/blog/post/2019/12/09/how-i-shut-down-a-test-factory-with-a-single-layer-2-packet/
+    async def dcp_req(self, req, dst_mac=MAC_PROFINET_BCAST):
         xid = random.randint(0, 65535)
-        self.identify_req = (
-            Ether(dst=MAC_PROFINET_BCAST, src=self.src_mac)
+        pkt = (
+            Ether(dst=dst_mac, src=self.src_mac)
             / ProfinetIO()
             / ProfinetDCP(
                 xid=xid,
                 response_delay_factor=1, # max response delay in 10ms increments
             )
-            / ProfinetDCPIdentifyReq(
+            / req
+        )
+        self.transport.sendto(bytes(pkt))
+
+    async def dcp_identify(self, name_of_station: str):
+        return await self.dcp_req(
+            ProfinetDCPIdentifyReq(
                 dcp_blocks=[
-                    DCPRequestBlock() / NameOfStationBlock(name_of_station="workshop-caparoc"),
+                    DCPRequestBlock() / NameOfStationBlock(name_of_station=name_of_station),
                 ]
-            )
+            ),
         )
-        self.send(self.identify_req)
-        raise self.WAITING_IDENTIFY_REPLY()
 
-    @ATMT.state()
-    def WAITING_IDENTIFY_REPLY(self):
-        pass
-
-    @ATMT.receive_condition(WAITING_IDENTIFY_REPLY)
-    def check_identify_reply(self, pkt):
-        if pkt.haslayer(ProfinetDCPIdentifyRes) and pkt[ProfinetDCP].xid == self.identify_req[ProfinetDCP].xid:
-            self.dst_mac = pkt[Ether].src
-            if ip := pkt.getlayer(IPParameterBlock):
-                if ip.ip == self.ip and ip.netmask == self.netmask and ip.gateway == self.gateway:
-                    raise self.EXCHANGE_CONFIGURATION()
-            raise self.SET_IP()
-
-    @ATMT.state()
-    def SET_IP(self):
-        xid = random.randint(0, 65535)
-        set_ip_req = (
-            Ether(dst=self.dst_mac, src=self.src_mac)
-            / ProfinetIO()
-            / ProfinetDCP(
-                xid=xid,
-                response_delay_factor=1, # max response delay in 10ms increments
-            )
-            / ProfinetDCPSetReq(
+    async def dcp_set_ip(self, mac, ip, netmask, gateway):
+        return await self.dcp_req(
+            ProfinetDCPSetReq(
                 dcp_blocks = [
-                    DCPSetRequestBlock(block_qualifier=1) / IPParameterBlock(ip=self.ip, netmask=self.netmask, gateway=self.gateway),
+                    DCPSetRequestBlock(block_qualifier=1) / IPParameterBlock(ip=ip, netmask=netmask, gateway=gateway),
                 ],
-            )
+            ),
+            dst_mac=mac,
         )
-        self.send(identify_req)
-        raise self.WAITING_SET_IP_REPLY()
 
-    @ATMT.state()
-    def WAITING_SET_IP_REPLY(self):
-        pass
-
-    @ATMT.receive_condition(WAITING_SET_IP_REPLY)
-    def check_set_ip_reply(self, pkt):
-        if pkt.haslayer(ProfinetDCPSetRes) and pkt[ProfinetDCP].xid == self.identify_req[ProfinetDCP].xid:
-            raise self.EXCHANGE_CONFIGURATION()
+    def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
+        # TODO: Consider switching to recvmsg
+        try:
+            pkt = Ether(data)
+        except:
+            LOGGER.exception("failed to parse packet")
+            return
+        pkt.time = time.time()
+        LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
+        if conf.debug_match:
+            debug.recv.append(pkt)
+        # TODO: Do something with packet
+        if pkt.haslayer(ProfinetDCP):
+            xid = pkt[ProfinetDCP].xid
+            # TODO: Dispatch based on xid
 
 
 class debug:
@@ -494,3 +459,45 @@ class ContextManagerProtocol(PnioRpcProtocol):
                     ],
                 ))
         return blocks
+
+class ProfinetInterface:
+    def __init__(self, ifname):
+        self.ifname = ifname
+        self.rt_protocol = None
+        self.iface = resolve_iface(ifname)
+        self.src_mac = self.iface.mac
+
+    async def get_rt_protocol(self):
+        if not self.rt_protocol:
+            self.rt_protocol = await create_rt_endpoint(self.ifname)
+        return self.rt_protocol
+
+    async def open_device(self, name_of_station, ip, netmask, gateway):
+        loop = get_running_loop()
+        rt = await self.get_rt_protocol()
+        pkt = await rt.dcp_identify(name_of_station)
+        mac = pkt[Ether].src
+        if ipb := pkt.getlayer(IPParameterBlock):
+            if not (ipb.ip == ip and ipb.netmask == netmask and ipb.gateway == gateway):
+                await rt.dcp_set_ip(mac, ip, netmask, gateway)
+        transport, protocol = await loop.create_datagram_endpoint(
+            protocol_factory=lambda: ContextManagerProtocol(ip),
+            local_addr=('0.0.0.0', 34964),
+            family=socket.AF_INET,
+        )
+        return protocol
+
+
+async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
+    if loop is None:
+        loop = get_running_loop()
+    sock = socket.socket(
+        family=socket.AF_PACKET,
+        type=socket.SOCK_RAW,
+        proto=ETHERTYPE_PROFINET,
+    )
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: RTProtocol(),
+        sock=sock,
+    )
+    return protocol
