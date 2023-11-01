@@ -1,6 +1,7 @@
 import sys
 from enum import Enum, auto
 from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 from xml.etree.ElementTree import parse, Element
 
 NS = {
@@ -26,6 +27,21 @@ class DataType(Enum):
 class DataItem:
     data_type: DataType
     text_id: str
+    name: str
+
+@dataclass
+class ParameterField:
+    offset: int
+    data_type: DataType
+    name: str
+    enum: Optional[Dict[str, int]]
+
+@dataclass
+class Parameter:
+    index: int
+    length: int
+    name: str
+    fields: List[ParameterField]
 
 @dataclass
 class Submodule:
@@ -34,6 +50,7 @@ class Submodule:
     subslots: frozenset[int] | None
     input_data: list[DataItem] = field(default_factory=list)
     output_data: list[DataItem] = field(default_factory=list)
+    parameters: list[Parameter] = field(default_factory=list)
 
     @property
     def input_length(self):
@@ -55,36 +72,11 @@ class Module:
             if submodule.id == id:
                 return submodule
 
-def parse_dataitem(el: Element) -> DataItem:
-    return DataItem(
-        data_type=DataType(el.get("DataType")),
-        text_id=el.get("TextId"),
-    )
-
 def parse_slots(t: str) -> frozenset[int]:
     if ".." in t:
         min, max = [int(x, 0) for x in t.split("..")]
         return frozenset(range(min, max+1))
     return frozenset([int(x, 0) for x in t.split()])
-
-def submodules(mod: Element) -> list[Submodule]:
-    out = []
-    for submodule in mod.findall("./VirtualSubmoduleList/VirtualSubmoduleItem", NS):
-        out.append(Submodule(
-            id=submodule.get("ID"),
-            ident=int(submodule.get("SubmoduleIdentNumber"), 0),
-            # spec says default is 1 if omitted
-            subslots=parse_slots(submodule.get("FixedInSubslots", "1")),
-            input_data=[parse_dataitem(e) for e in submodule.findall("./IOData/Input/DataItem", NS)],
-            output_data=[parse_dataitem(e) for e in submodule.findall("./IOData/Output/DataItem", NS)],
-        ))
-    for submodule in mod.findall("./SystemDefinedSubmoduleList/*", NS):
-        out.append(Submodule(
-            id=submodule.get("ID"),
-            ident=int(submodule.get("SubmoduleIdentNumber"), 0),
-            subslots=parse_slots(submodule.get("SubslotNumber", "1")),
-        ))
-    return out
 
 @dataclass
 class GSDML:
@@ -93,6 +85,7 @@ class GSDML:
     vendor_id: int
     device_id: int
     modules: list[Module]
+    text: Dict[str, str]
 
     def __init__(self, path):
         self.doc = parse(path)
@@ -104,12 +97,16 @@ class GSDML:
 
         self.dap = self.doc.find(".//DeviceAccessPointItem", NS)
 
+        self.text = {}
+        for el in self.doc.findall(".//ExternalTextList/PrimaryLanguage/Text", NS):
+            self.text[el.get("TextId")] = el.get("Value")
+
         modules = [
             Module(
                 id=self.dap.get("ID"),
                 ident=int(self.dap.get("ModuleIdentNumber"), 0),
                 slots=parse_slots(self.dap.get("FixedInSlots")),
-                submodules=submodules(self.dap),
+                submodules=self._submodules(self.dap),
             ),
         ]
 
@@ -119,7 +116,7 @@ class GSDML:
                 id=module.get("ID"),
                 ident=int(module.get("ModuleIdentNumber"), 0),
                 slots=parse_slots(mir.get("AllowedInSlots")),
-                submodules=submodules(module),
+                submodules=self._submodules(module),
             ))
         self.modules = modules
 
@@ -127,6 +124,53 @@ class GSDML:
         for module in self.modules:
             if module.id == id:
                 return module
+
+    def _parameters(self, submod: Element) -> List[Parameter]:
+        out = []
+        for parameter in submod.findall("./RecordDataList/ParameterRecordDataItem", NS):
+            fields = []
+            for field in parameter.findall("./Ref"):
+                fields.append(ParameterField(
+                    offset=int(field.get("ByteOffset"), 0),
+                    data_type=DataType(field.get("DataType")),
+                    name=self.text[field.get("TextId")],
+                    enum=None, # TODO
+                ))
+            out.append(Parameter(
+                index=int(parameter.get("Index"), 0),
+                length=int(parameter.get("Length"), 0),
+                name=self.text[parameter.find("Name", NS).get("TextId")],
+                fields=fields,
+            ))
+        return out
+
+    def _submodules(self, mod: Element) -> List[Submodule]:
+        out = []
+        for submodule in mod.findall("./VirtualSubmoduleList/VirtualSubmoduleItem", NS):
+            out.append(Submodule(
+                id=submodule.get("ID"),
+                ident=int(submodule.get("SubmoduleIdentNumber"), 0),
+                # spec says default is 1 if omitted
+                subslots=parse_slots(submodule.get("FixedInSubslots", "1")),
+                input_data=[self._parse_dataitem(e) for e in submodule.findall("./IOData/Input/DataItem", NS)],
+                output_data=[self._parse_dataitem(e) for e in submodule.findall("./IOData/Output/DataItem", NS)],
+                parameters=self._parameters(submodule),
+            ))
+        for submodule in mod.findall("./SystemDefinedSubmoduleList/*", NS):
+            out.append(Submodule(
+                id=submodule.get("ID"),
+                ident=int(submodule.get("SubmoduleIdentNumber"), 0),
+                subslots=parse_slots(submodule.get("SubslotNumber", "1")),
+            ))
+        return out
+
+    def _parse_dataitem(self, el: Element) -> DataItem:
+        text_id=el.get("TextId")
+        return DataItem(
+            data_type=DataType(el.get("DataType")),
+            text_id=text_id,
+            name=self.text[text_id],
+        )
 
 if __name__ == "__main__":
     print(GSDML(sys.argv[1]))
