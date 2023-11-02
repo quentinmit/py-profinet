@@ -130,7 +130,9 @@ async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
         proto=ETHERTYPE_PROFINET,
     )
     sock.bind((ifname, ETHERTYPE_PROFINET))
-    LOGGER.debug("rt socket name: %s", sock.getsockname())
+    mac_address = sock.getsockname()[4]
+    LOGGER.info("Creating RT endpoint on %s (%s)", ifname, mac_address.hex())
+    sock.type = socket.SOCK_DGRAM
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: RTProtocol(),
         sock=sock,
