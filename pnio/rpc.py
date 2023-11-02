@@ -92,24 +92,27 @@ class DceRpcProtocol(DatagramProtocol):
         req = req / pdu
         assert len(req) <= PF_CMRPC_MUST_RECV_FRAG_SIZE
         fut = get_running_loop().create_future()
-        self.pending_requests[req.seqnum] = fut
-        dst_addr = await self._get_addr_for_interface(req.if_id)
-        LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
-        req.sent_time = req.time = time.time()
-        if conf.debug_match:
-            from scapy.layers.inet import IP, UDP
-            src_addr = self.transport.get_extra_info('sockname', (None, None))
-            p = (
-                IP(src=src_addr[0], dst=dst_addr[0])
-                / UDP(sport=src_addr[1], dport=dst_addr[1])
-                / req
-            )
-            p.time = req.time
-            debug.sent.append(p)
-        self.transport.sendto(bytes(req), dst_addr)
-        # TODO: Timeout?
-        # TODO: Retries
-        res = await fut
+        try:
+            self.pending_requests[req.seqnum] = fut
+            dst_addr = await self._get_addr_for_interface(req.if_id)
+            LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
+            req.sent_time = req.time = time.time()
+            if conf.debug_match:
+                from scapy.layers.inet import IP, UDP
+                src_addr = self.transport.get_extra_info('sockname', (None, None))
+                p = (
+                    IP(src=src_addr[0], dst=dst_addr[0])
+                    / UDP(sport=src_addr[1], dport=dst_addr[1])
+                    / req
+                )
+                p.time = req.time
+                debug.sent.append(p)
+            self.transport.sendto(bytes(req), dst_addr)
+            # TODO: Timeout?
+            # TODO: Retries
+            res = await fut
+        finally:
+            fut.cancel()
         if res.ptype == 2: # response
             return res.payload
         elif res.ptype in (3, 6): # fault, reject

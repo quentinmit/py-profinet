@@ -1,4 +1,4 @@
-from asyncio import get_running_loop, DatagramProtocol, DatagramTransport
+from asyncio import get_running_loop, DatagramProtocol, DatagramTransport, Future
 from contextlib import asynccontextmanager
 import enum
 import logging
@@ -36,6 +36,11 @@ LOGGER = logging.getLogger("profinet.rt")
 
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
+    pending_requests: dict[int, Future]
+
+    def __init__(self):
+        self.pending_requests = {}
+
     def connection_made(self, transport: DatagramTransport) -> None:
         LOGGER.info("connection made: %s", transport)
         self.transport = transport
@@ -55,7 +60,15 @@ class RTProtocol(DatagramProtocol):
             )
             / req
         )
-        self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
+        loop = get_running_loop()
+        fut = loop.create_future()
+        try:
+            self.pending_requests[("dcp", xid)] = fut
+            self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
+            res = await fut
+            return res[ProfinetDCP]
+        finally:
+            fut.cancel()
 
     async def dcp_identify(self, name_of_station: str):
         return await self.dcp_req(
@@ -88,9 +101,14 @@ class RTProtocol(DatagramProtocol):
         if conf.debug_match:
             debug.recv.append(pkt)
         # TODO: Do something with packet
+        key = None
         if pkt.haslayer(ProfinetDCP):
             xid = pkt[ProfinetDCP].xid
-            # TODO: Dispatch based on xid
+            key = ("dcp", xid)
+        # TODO: Figure out how to handle multiple packets for a single request
+        if key and key in self.pending_requests:
+            self.pending_requests[key].set_result(pkt)
+            del self.pending_requests[key]
 
 
 class debug:
