@@ -40,6 +40,7 @@ class RTProtocol(DatagramProtocol):
         LOGGER.info("connection made: %s", transport)
         self.transport = transport
         sockname = transport.get_extra_info('sockname')
+        self.ifname = sockname[0]
         self.src_mac = sockname[4]
         return super().connection_made(transport)
 
@@ -54,7 +55,7 @@ class RTProtocol(DatagramProtocol):
             )
             / req
         )
-        self.transport.sendto(bytes(pkt), (dst_mac, ETHERTYPE_PROFINET))
+        self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
 
     async def dcp_identify(self, name_of_station: str):
         return await self.dcp_req(
@@ -133,6 +134,7 @@ async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
         proto=ETHERTYPE_PROFINET,
     )
     sock.bind((ifname, ETHERTYPE_PROFINET))
+    sock.setblocking(False)
     mac_address = sock.getsockname()[4]
     LOGGER.info("Creating RT endpoint on %s (%s)", ifname, mac_address.hex())
     protocol = RTProtocol()
