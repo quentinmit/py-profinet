@@ -35,9 +35,12 @@ MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
 LOGGER = logging.getLogger("profinet.rt")
 
 class RTProtocol(DatagramProtocol):
+    src_mac: bytes
     def connection_made(self, transport: DatagramTransport) -> None:
         LOGGER.info("connection made: %s", transport)
         self.transport = transport
+        sockname = transport.get_extra_info('sockname')
+        self.src_mac = sockname[4]
         return super().connection_made(transport)
 
     async def dcp_req(self, req, dst_mac=MAC_PROFINET_BCAST):
@@ -51,7 +54,7 @@ class RTProtocol(DatagramProtocol):
             )
             / req
         )
-        self.transport.sendto(bytes(pkt))
+        self.transport.sendto(bytes(pkt), (dst_mac, ETHERTYPE_PROFINET))
 
     async def dcp_identify(self, name_of_station: str):
         return await self.dcp_req(
