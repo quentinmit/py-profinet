@@ -237,7 +237,7 @@ class PnioRpcError(Exception):
         return f"{self.error_code!r} - {self.error_decode!r} ({self.error_code_1!r} {self.error_code_2!r})"
 
 class PnioRpcProtocol(DceRpcProtocol):
-    def __init__(self, dst_host, vendor_id, device_id, instance=0):
+    def __init__(self, dst_host, vendor_id, device_id, instance=1):
         super().__init__(dst_host)
         self.object = create_pn_uuid(vendor_id=vendor_id, device_id=device_id, instance=instance)
 
@@ -334,8 +334,8 @@ class Association:
         return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
 
 class ContextManagerProtocol(PnioRpcProtocol):
-    def __init__(self, dst_host, vendor_id, device_id):
-        super().__init__(dst_host=dst_host, vendor_id=vendor_id, device_id=device_id)
+    def __init__(self, dst_host, vendor_id, device_id, instance=1):
+        super().__init__(dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
         self.aruuid = 0
         self.session_key = 1
 

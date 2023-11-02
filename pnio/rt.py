@@ -17,17 +17,21 @@ from scapy.interfaces import resolve_iface
 from scapy.config import conf
 from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
 from .pnio_dcp import (
+    DeviceIDBlock,
+    DeviceInstanceBlock,
     ProfinetDCP,
     ProfinetDCPIdentifyReq,
     ProfinetDCPSetReq,
     ProfinetDCPIdentifyRes,
     ProfinetDCPSetRes,
     DCPRequestBlock,
+    DCPSetRequestBlock,
     NameOfStationBlock,
     IPParameterBlock,
     DCP_SERVICE_ID,
     DCP_SERVICE_TYPE,
 )
+from .rpc import ContextManagerProtocol
 
 ETHERTYPE_PROFINET=0x8892
 MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
@@ -78,7 +82,7 @@ class RTProtocol(DatagramProtocol):
         async for res in self.dcp_req(req, dst_mac):
             return res
 
-    async def dcp_identify(self, name_of_station: str):
+    async def dcp_identify(self, name_of_station: str) -> ProfinetDCP:
         return await self.dcp_req_one(
             ProfinetDCPIdentifyReq(
                 dcp_blocks=[
@@ -141,8 +145,15 @@ class ProfinetInterface:
         if ipb := pkt.getlayer(IPParameterBlock):
             if not (ipb.ip == ip and ipb.netmask == netmask and ipb.gateway == gateway):
                 await rt.dcp_set_ip(mac, ip, netmask, gateway)
+        ib = pkt[DeviceInstanceBlock]
+        instance = (ib.device_instance_high << 8) | ib.device_instance_low
         transport, protocol = await loop.create_datagram_endpoint(
-            protocol_factory=lambda: ContextManagerProtocol(ip),
+            protocol_factory=lambda: ContextManagerProtocol(
+                ip,
+                vendor_id=pkt[DeviceIDBlock].vendor_id,
+                device_id=pkt[DeviceIDBlock].device_id,
+                instance=instance,
+            ),
             local_addr=('0.0.0.0', 34964),
             family=socket.AF_INET,
         )
