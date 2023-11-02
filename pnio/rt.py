@@ -132,9 +132,15 @@ async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
     sock.bind((ifname, ETHERTYPE_PROFINET))
     mac_address = sock.getsockname()[4]
     LOGGER.info("Creating RT endpoint on %s (%s)", ifname, mac_address.hex())
-    sock.type = socket.SOCK_DGRAM
-    transport, protocol = await loop.create_datagram_endpoint(
-        lambda: RTProtocol(),
-        sock=sock,
-    )
+    protocol = RTProtocol()
+    waiter = loop.create_future()
+    # N.B. asyncio.create_datagram_endpoint checks to make sure the type is SOCK_DGRAM.
+    # Even though SOCK_RAW would work fine, we have to call the underlying method to sidestep that check.
+    transport = loop._make_datagram_transport(
+        sock, protocol, None, waiter)
+    try:
+        await waiter
+    except:
+        transport.close()
+        raise
     return protocol
