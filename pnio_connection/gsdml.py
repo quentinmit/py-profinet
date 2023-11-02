@@ -1,8 +1,8 @@
 import sys
 from enum import Enum, auto
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-from xml.etree.ElementTree import parse, Element
+from typing import Optional
+from xml.etree.ElementTree import parse, Element, ElementTree
 
 NS = {
     '': 'http://www.profibus.com/GSDML/2003/11/DeviceProfile',
@@ -12,6 +12,7 @@ class DataType(Enum):
     Unsigned8 = "Unsigned8"
     Unsigned16 = "Unsigned16"
     Unsigned32 = "Unsigned32"
+    Bit = "Bit"
 
     @property
     def size(self):
@@ -31,17 +32,17 @@ class DataItem:
 
 @dataclass
 class ParameterField:
-    offset: int
+    offset: int|tuple[int, int]
     data_type: DataType
     name: str
-    enum: Optional[Dict[str, int]]
+    enum: Optional[dict[str, int]]
 
 @dataclass
 class Parameter:
     index: int
     length: int
     name: str
-    fields: List[ParameterField]
+    fields: list[ParameterField]
 
 @dataclass
 class Submodule:
@@ -80,12 +81,13 @@ def parse_slots(t: str) -> frozenset[int]:
 
 @dataclass
 class GSDML:
-    doc: Element
+    doc: ElementTree
     dap: Element
     vendor_id: int
     device_id: int
     modules: list[Module]
-    text: Dict[str, str]
+    text: dict[str, str]
+    value_list: dict[str, dict[str, int]]
 
     def __init__(self, path):
         self.doc = parse(path)
@@ -100,6 +102,13 @@ class GSDML:
         self.text = {}
         for el in self.doc.findall(".//ExternalTextList/PrimaryLanguage/Text", NS):
             self.text[el.get("TextId")] = el.get("Value")
+
+        self.value_list = {}
+        for value_item in self.doc.findall(".//ValueList/ValueItem", NS):
+            self.value_list[value_item.get("ID")] = {
+                self.text[a.get("TextId")]: int(a.get("Content"), 0)
+                for a in value_item.findall("./Assignments/Assign", NS)
+            }
 
         modules = [
             Module(
@@ -125,16 +134,23 @@ class GSDML:
             if module.id == id:
                 return module
 
-    def _parameters(self, submod: Element) -> List[Parameter]:
+    def _parameters(self, submod: Element) -> list[Parameter]:
         out = []
         for parameter in submod.findall("./RecordDataList/ParameterRecordDataItem", NS):
             fields = []
-            for field in parameter.findall("./Ref"):
+            for field in parameter.findall("./Ref", NS):
+                offset=int(field.get("ByteOffset", "0"), 0)
+                data_type=DataType(field.get("DataType"))
+                if data_type == DataType.Bit:
+                    offset=(offset, int(field.get("BitOffset", "0"), 0))
+                enum = None
+                if value_item := field.get("ValueItemTarget"):
+                    enum = self.value_list[value_item]
                 fields.append(ParameterField(
-                    offset=int(field.get("ByteOffset"), 0),
-                    data_type=DataType(field.get("DataType")),
+                    offset=offset,
+                    data_type=data_type,
                     name=self.text[field.get("TextId")],
-                    enum=None, # TODO
+                    enum=enum,
                 ))
             out.append(Parameter(
                 index=int(parameter.get("Index"), 0),
@@ -144,7 +160,7 @@ class GSDML:
             ))
         return out
 
-    def _submodules(self, mod: Element) -> List[Submodule]:
+    def _submodules(self, mod: Element) -> list[Submodule]:
         out = []
         for submodule in mod.findall("./VirtualSubmoduleList/VirtualSubmoduleItem", NS):
             out.append(Submodule(
