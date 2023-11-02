@@ -237,18 +237,18 @@ class PnioRpcError(Exception):
         return f"{self.error_code!r} - {self.error_decode!r} ({self.error_code_1!r} {self.error_code_2!r})"
 
 class PnioRpcProtocol(DceRpcProtocol):
+    def __init__(self, dst_host, vendor_id, device_id, instance=0):
+        super().__init__(dst_host)
+        self.object = create_pn_uuid(vendor_id=vendor_id, device_id=device_id, instance=instance)
+
     async def rpc(self, opnum: int, blocks: list[Block], args_max=32832): #16696):
-        # TODO: Set automatically
-        # in big endian, u16 instance, u16 device, u16 vendor
-        # VendorID="0x00B0" DeviceID="0x015F"
-        object = "dea00000-6c97-11d1-8271-0001015f00b0"
         res = await self.call_rpc(
             opnum=opnum,
             pdu=PNIOServiceReqPDU(
                 args_max=args_max,
                 max_count=args_max,
                 blocks=blocks),
-            object=object,
+            object=self.object,
         )
         if not isinstance(res, PNIOServiceResPDU):
             LOGGER.error("didn't receive a PNIOServiceResPDU:\n%s", res.show2(dump=True))
@@ -274,6 +274,16 @@ class PnioRpcProtocol(DceRpcProtocol):
 #  contains a initial AckSeqNum
 #  The value 0xFFFE indicates the there was no Data-RTA-PDU received before. The value 0xFFFF indicates acknowledges the reception of the first Data-RTA-PDU.
 
+def create_pn_uuid(vendor_id, device_id, instance=0):
+    # in big endian, the last part is u16 instance, u16 device, u16 vendor
+    return uuid.UUID(fields=(
+        0xdea00000,
+        0x6c97,
+        0x11d1,
+        0x82, 0x71,
+        (instance << 32) | (device_id << 16) | vendor_id
+    ))
+
 class Association:
     def __init__(self, protocol):
         self.protocol = protocol
@@ -286,9 +296,7 @@ class Association:
             ARUUID=self.aruuid,
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
             CMInitiatorMacAdd=cm_mac_addr,
-            # in big endian, the last part is u16 instance, u16 device, u16 vendor
-            CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-006400f9002a", # FIXME: Needed?
-            #CMInitiatorObjectUUID="dea00000-6c97-11d1-8271-00000000f000",
+            CMInitiatorObjectUUID=create_pn_uuid(vendor_id=0xf000, device_id=0),
             CMInitiatorStationName="py-profinet",
             CMInitiatorActivityTimeoutFactor=1000,
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
@@ -326,8 +334,8 @@ class Association:
         return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
 
 class ContextManagerProtocol(PnioRpcProtocol):
-    def __init__(self, dst_host):
-        super().__init__(dst_host=dst_host)
+    def __init__(self, dst_host, vendor_id, device_id):
+        super().__init__(dst_host=dst_host, vendor_id=vendor_id, device_id=device_id)
         self.aruuid = 0
         self.session_key = 1
 
