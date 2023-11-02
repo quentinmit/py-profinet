@@ -129,6 +129,8 @@ async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
         type=socket.SOCK_RAW,
         proto=ETHERTYPE_PROFINET,
     )
+    sock.bind((ifname, ETHERTYPE_PROFINET))
+    LOGGER.debug("rt socket name: %s", sock.getsockname())
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: RTProtocol(),
         sock=sock,
