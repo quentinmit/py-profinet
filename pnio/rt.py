@@ -65,7 +65,10 @@ class RTProtocol(DatagramProtocol):
             self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
             while True:
                 pkt = await queue.get()
-                yield pkt[ProfinetDCP]
+                try:
+                    yield pkt[ProfinetDCP]
+                finally:
+                    queue.task_done()
         finally:
             del self.pending_requests[("dcp", xid)]
 
