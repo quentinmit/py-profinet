@@ -1,4 +1,4 @@
-from asyncio import get_running_loop, DatagramProtocol, DatagramTransport, Future
+from asyncio import Queue, get_running_loop, DatagramProtocol, DatagramTransport, Future
 from contextlib import asynccontextmanager
 import enum
 import logging
@@ -36,13 +36,12 @@ LOGGER = logging.getLogger("profinet.rt")
 
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
-    pending_requests: dict[int, Future]
+    pending_requests: dict[tuple[str, int], Queue]
 
     def __init__(self):
         self.pending_requests = {}
 
     def connection_made(self, transport: DatagramTransport) -> None:
-        LOGGER.info("connection made: %s", transport)
         self.transport = transport
         sockname = transport.get_extra_info('sockname')
         self.ifname = sockname[0]
@@ -60,18 +59,24 @@ class RTProtocol(DatagramProtocol):
             )
             / req
         )
-        loop = get_running_loop()
-        fut = loop.create_future()
+        queue = Queue()
         try:
-            self.pending_requests[("dcp", xid)] = fut
+            self.pending_requests[("dcp", xid)] = queue
             self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
-            res = await fut
-            return res[ProfinetDCP]
+            while True:
+                pkt = await queue.get()
+                yield pkt[ProfinetDCP]
         finally:
-            fut.cancel()
+            del self.pending_requests[("dcp", xid)]
+
+    async def dcp_req_one(self, req, dst_mac=MAC_PROFINET_BCAST):
+        # TODO: Is it sufficient to just wait for the iterator to be GC'd, or
+        # do we need to explicitly aclose it?
+        async for res in self.dcp_req(req, dst_mac):
+            return res
 
     async def dcp_identify(self, name_of_station: str):
-        return await self.dcp_req(
+        return await self.dcp_req_one(
             ProfinetDCPIdentifyReq(
                 dcp_blocks=[
                     DCPRequestBlock() / NameOfStationBlock(name_of_station=name_of_station),
@@ -80,7 +85,7 @@ class RTProtocol(DatagramProtocol):
         )
 
     async def dcp_set_ip(self, mac, ip, netmask, gateway):
-        return await self.dcp_req(
+        return await self.dcp_req_one(
             ProfinetDCPSetReq(
                 dcp_blocks = [
                     DCPSetRequestBlock(block_qualifier=1) / IPParameterBlock(ip=ip, netmask=netmask, gateway=gateway),
@@ -105,10 +110,8 @@ class RTProtocol(DatagramProtocol):
         if pkt.haslayer(ProfinetDCP):
             xid = pkt[ProfinetDCP].xid
             key = ("dcp", xid)
-        # TODO: Figure out how to handle multiple packets for a single request
         if key and key in self.pending_requests:
-            self.pending_requests[key].set_result(pkt)
-            del self.pending_requests[key]
+            self.pending_requests[key].put_nowait(pkt)
 
 
 class debug:
