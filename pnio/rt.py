@@ -31,7 +31,7 @@ from .pnio_dcp import (
     DCP_SERVICE_ID,
     DCP_SERVICE_TYPE,
 )
-from .rpc import ContextManagerProtocol
+from .rpc import ContextManagerActivity
 
 ETHERTYPE_PROFINET=0x8892
 MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
@@ -70,7 +70,7 @@ class RTProtocol(DatagramProtocol):
             while True:
                 pkt = await queue.get()
                 try:
-                    yield pkt[ProfinetDCP]
+                    yield pkt
                 finally:
                     queue.task_done()
         finally:
@@ -124,41 +124,6 @@ class RTProtocol(DatagramProtocol):
 class debug:
     recv = PacketList([], "Received")
     sent = PacketList([], "Sent")
-
-class ProfinetInterface:
-    def __init__(self, ifname):
-        self.ifname = ifname
-        self.rt_protocol = None
-        self.iface = resolve_iface(ifname)
-        self.src_mac = self.iface.mac
-
-    async def get_rt_protocol(self):
-        if not self.rt_protocol:
-            self.rt_protocol = await create_rt_endpoint(self.ifname)
-        return self.rt_protocol
-
-    async def open_device(self, name_of_station, ip, netmask, gateway):
-        loop = get_running_loop()
-        rt = await self.get_rt_protocol()
-        pkt = await rt.dcp_identify(name_of_station)
-        mac = pkt[Ether].src
-        if ipb := pkt.getlayer(IPParameterBlock):
-            if not (ipb.ip == ip and ipb.netmask == netmask and ipb.gateway == gateway):
-                await rt.dcp_set_ip(mac, ip, netmask, gateway)
-        ib = pkt[DeviceInstanceBlock]
-        instance = (ib.device_instance_high << 8) | ib.device_instance_low
-        transport, protocol = await loop.create_datagram_endpoint(
-            protocol_factory=lambda: ContextManagerProtocol(
-                ip,
-                vendor_id=pkt[DeviceIDBlock].vendor_id,
-                device_id=pkt[DeviceIDBlock].device_id,
-                instance=instance,
-            ),
-            local_addr=('0.0.0.0', 34964),
-            family=socket.AF_INET,
-        )
-        return protocol
-
 
 async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
     if loop is None:

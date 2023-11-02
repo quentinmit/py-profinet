@@ -3,6 +3,8 @@ import os.path
 from typing import Dict, List
 import yaml
 
+from .rt import RTProtocol, create_rt_endpoint
+
 from .gsdml import GSDML, Module, Submodule
 from .pnio_rpc import ExpectedSubmodule, ExpectedSubmoduleAPI, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, IOCRAPIObject, IOCRAPI, IOCRBlockReq
 
@@ -176,3 +178,9 @@ class ConfigReader:
             for subslot in slot.subslots:
                 for index, value in subslot.parameters.items():
                     yield (slot.slot, subslot.subslot, index, value)
+
+    async def create_rt_endpoint(self) -> RTProtocol:
+        return await create_rt_endpoint(self.config["ifname"])
+
+    #async def open_device(self, rt: RTProtocol) -> ProfinetDevice:
+    #    return await rt.open_device(self.config["name_of_station"])

@@ -1,4 +1,4 @@
-from asyncio import get_running_loop, DatagramProtocol, DatagramTransport
+from asyncio import AbstractEventLoop, Future, Queue, get_running_loop, DatagramProtocol, DatagramTransport
 from contextlib import asynccontextmanager
 import enum
 import logging
@@ -15,9 +15,11 @@ from scapy.config import conf
 
 LOGGER = logging.getLogger("profinet.rpc")
 
+
 class debug:
     recv = PacketList([], "Received")
     sent = PacketList([], "Sent")
+
 
 class DceRpcError(Exception):
     def __init__(self, code):
@@ -26,19 +28,102 @@ class DceRpcError(Exception):
     def __str__(self):
         return _DCE_RPC_ERROR_CODES.get(self.code, hex(self.code))
 
+
 PF_CMRPC_MUST_RECV_FRAG_SIZE = 1464
 
+
 class DceRpcProtocol(DatagramProtocol):
-    def __init__(self, dst_host):
+    pending_requests: dict[tuple[uuid.UUID, int], Future]
+
+    def __init__(self):
+        self.pending_requests = dict()
+        super().__init__()
+
+    def connection_made(self, transport: DatagramTransport) -> None:
+        LOGGER.info("connection made: %s", transport)
+        self.transport = transport
+        return super().connection_made(transport)
+
+    def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
+        # TODO: Consider switching to recvmsg
+        try:
+            pkt = DceRpc4(data)
+        except:
+            LOGGER.exception("failed to parse packet")
+            return
+        pkt.time = time.time()
+        LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
+        if conf.debug_match:
+            from scapy.layers.inet import IP, UDP
+            dst_addr = self.transport.get_extra_info('sockname', (None, None))
+            p = (
+                IP(src=src_addr[0], dst=dst_addr[0])
+                / UDP(sport=src_addr[1], dport=dst_addr[1])
+                / pkt
+            )
+            p.time = pkt.time
+            debug.recv.append(p)
+        # TODO: Ack?
+        # TODO: Error handling?
+        # TODO: Check packet type?
+        # TODO: Handle multiple response packets?
+        key = (pkt.act_id, pkt.seqnum)
+        if fut := self.pending_requests.get(key):
+            fut.set_result(pkt)
+            del self.pending_requests[key]
+        else:
+            LOGGER.warning("received unknown sequence number: %s", pkt.show2(dump=True))
+
+    async def call_rpc(self, req: DceRpc4, dst_addr: tuple[str, int]):
+        fut = get_running_loop().create_future()
+        try:
+            self.pending_requests[(req.act_id, req.seqnum)] = fut
+            LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
+            req.sent_time = req.time = time.time()
+            if conf.debug_match:
+                from scapy.layers.inet import IP, UDP
+                src_addr = self.transport.get_extra_info('sockname', (None, None))
+                p = (
+                    IP(src=src_addr[0], dst=dst_addr[0])
+                    / UDP(sport=src_addr[1], dport=dst_addr[1])
+                    / req
+                )
+                p.time = req.time
+                debug.sent.append(p)
+            self.transport.sendto(bytes(req), dst_addr)
+            # TODO: Timeout?
+            # TODO: Retries
+            res = await fut
+        finally:
+            fut.cancel()
+        if res.ptype == 2: # response
+            return res.payload
+        elif res.ptype in (3, 6): # fault, reject
+            raise DceRpcError(int.from_bytes(res.payload.load, "little"))
+        else:
+            raise ValueError("unexpected response type: %s" % (res.ptype,))
+
+async def create_rpc_endpoint(port: int = socket.getservbyname("profinet-cm"), loop: AbstractEventLoop | None = None) -> DceRpcProtocol:
+    if loop is None:
+        loop = get_running_loop()
+    _, protocol = await loop.create_datagram_endpoint(
+        protocol_factory=DceRpcProtocol,
+        local_addr=('0.0.0.0', port),
+        family=socket.AF_INET,
+    )
+    return protocol
+
+class Activity:
+    def __init__(self, protocol: DceRpcProtocol, dst_host: str):
+        self.protocol = protocol
         self.dst_host = dst_host
         port = socket.getservbyname("profinet-cm")
         self.default_port = port
         self.seqnum = 0
         self.activity_uuid = uuid.uuid4()
         self.serial_number = 0
-        self.pending_requests = dict()
         self.endpoints_by_interface = None
-        super().__init__()
+
 
     def _get_header(self, opnum, seqnum=None):
         if seqnum is None:
@@ -91,68 +176,8 @@ class DceRpcProtocol(DatagramProtocol):
             req.object = object
         req = req / pdu
         assert len(req) <= PF_CMRPC_MUST_RECV_FRAG_SIZE
-        fut = get_running_loop().create_future()
-        try:
-            self.pending_requests[req.seqnum] = fut
-            dst_addr = await self._get_addr_for_interface(req.if_id)
-            LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
-            req.sent_time = req.time = time.time()
-            if conf.debug_match:
-                from scapy.layers.inet import IP, UDP
-                src_addr = self.transport.get_extra_info('sockname', (None, None))
-                p = (
-                    IP(src=src_addr[0], dst=dst_addr[0])
-                    / UDP(sport=src_addr[1], dport=dst_addr[1])
-                    / req
-                )
-                p.time = req.time
-                debug.sent.append(p)
-            self.transport.sendto(bytes(req), dst_addr)
-            # TODO: Timeout?
-            # TODO: Retries
-            res = await fut
-        finally:
-            fut.cancel()
-        if res.ptype == 2: # response
-            return res.payload
-        elif res.ptype in (3, 6): # fault, reject
-            raise DceRpcError(int.from_bytes(res.payload.load, "little"))
-        else:
-            raise ValueError("unexpected response type: %s" % (res.ptype,))
-
-
-    def connection_made(self, transport: DatagramTransport) -> None:
-        LOGGER.info("connection made: %s", transport)
-        self.transport = transport
-        return super().connection_made(transport)
-    def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
-        # TODO: Consider switching to recvmsg
-        try:
-            pkt = DceRpc4(data)
-        except:
-            LOGGER.exception("failed to parse packet")
-            return
-        pkt.time = time.time()
-        LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
-        if conf.debug_match:
-            from scapy.layers.inet import IP, UDP
-            dst_addr = self.transport.get_extra_info('sockname', (None, None))
-            p = (
-                IP(src=src_addr[0], dst=dst_addr[0])
-                / UDP(sport=src_addr[1], dport=dst_addr[1])
-                / pkt
-            )
-            p.time = pkt.time
-            debug.recv.append(p)
-        # TODO: Ack?
-        # TODO: Error handling?
-        # TODO: Check packet type?
-        # TODO: Handle multiple response packets?
-        if fut := self.pending_requests.get(pkt.seqnum):
-            fut.set_result(pkt)
-            del self.pending_requests[pkt.seqnum]
-        else:
-            LOGGER.warning("received unknown sequence number: %s", pkt.show2(dump=True))
+        dst_addr = await self._get_addr_for_interface(req.if_id)
+        return await self.protocol.call_rpc(req, dst_addr=dst_addr)
 
 class ERROR_CODE(enum.IntEnum):
     PNIO = 0x81
@@ -236,9 +261,9 @@ class PnioRpcError(Exception):
     def __str__(self):
         return f"{self.error_code!r} - {self.error_decode!r} ({self.error_code_1!r} {self.error_code_2!r})"
 
-class PnioRpcProtocol(DceRpcProtocol):
-    def __init__(self, dst_host, vendor_id, device_id, instance=1):
-        super().__init__(dst_host)
+class PnioRpcActivity(Activity):
+    def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
+        super().__init__(protocol=protocol, dst_host=dst_host)
         self.object = create_pn_uuid(vendor_id=vendor_id, device_id=device_id, instance=instance)
 
     async def rpc(self, opnum: int, blocks: list[Block], args_max=32832): #16696):
@@ -333,9 +358,9 @@ class Association:
         req = IODWriteReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index) / data
         return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
 
-class ContextManagerProtocol(PnioRpcProtocol):
-    def __init__(self, dst_host, vendor_id, device_id, instance=1):
-        super().__init__(dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
+class ContextManagerActivity(PnioRpcActivity):
+    def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
+        super().__init__(protocol=protocol, dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
         self.aruuid = 0
         self.session_key = 1
 
