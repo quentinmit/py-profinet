@@ -57,86 +57,11 @@ class PNIOConnection:
             time.sleep(1)
 
     def build_connection(self):
-        # IDENTIFY DEVICE AND MAC
-        ident_msg = get_ident_msg(src=self.mac_src, name_of_station=self.device_name)
-        ans, _ = srp(ident_msg, iface=self.iface, timeout=1, multi=True, verbose=False)
-        self.mac_address_device = ans[-1].answer["Ethernet"].src
-
-        if self.mac_address_device == self.mac_src or len(ans) < 2:
-            print("MAC ADDRESS IS NOT CORRECT!!!")
-            print("ABORT")
-            return
-        # END IDENTIFY DEVICE AND MAC
-
-        # SET IP OF DEVICE
-        set_ip_msg = get_set_ip_msg(
-            src=self.mac_src, dst=self.mac_address_device, ip=self.device_ip
-        )
-        ans, _ = srp(set_ip_msg, iface=self.iface, timeout=1, multi=True, verbose=False)
-
-        ip_rsp = ans[-1].answer
-        if not ip_rsp.haslayer("Profinet DCP"):
-            print("ANSWER NOT RECEIVED!!!")
-            print("ABORT")
-            return
-        dcp_pkt = ip_rsp["Profinet DCP"]
-        # DCP_SERVICE_TYPE = 0x01: "Response Success"
-        # DCP_SERVICE_ID = 0x04: "Set"
-        if dcp_pkt.service_type != 0x01 or dcp_pkt.service_id != 0x04:
-            print("ANSWER NOT CORRECT!!!")
-            print("ABORT")
-            return
-        # END SET IP OF DEVICE
-
-        # EXCHANGE CONFIGURATION OF DEVICE
-        time.sleep(2)
-        answer_incorrect = True
-        while answer_incorrect:
-            connect_msg = get_connect_dcprpc_msg(
-                ip=self.device_ip, device=self.device, auuid=self.auuid
-            )
-            ans, _ = sr(
-                connect_msg, iface=self.iface, timeout=2, multi=True, verbose=False
-            )
-
-            connect_rsp = DceRpc(ans[-1].answer[Raw].load)
-
-            if not connect_rsp.haslayer("PNIOServiceResPDU"):
-                ping_msg = get_ping_msg(ip=self.device_ip)
-                sr1(ping_msg, iface=self.iface, timeout=2, verbose=False)
-                continue
-            dcp_pkt = connect_rsp["PNIOServiceResPDU"]
-            # status = 0: "Ok"
-            if dcp_pkt.status != 0:
-                ping_msg = get_ping_msg(ip=self.device_ip)
-                sr1(ping_msg, iface=self.iface, timeout=2, verbose=False)
-                continue
-            answer_incorrect = False
-
-        # END EXCHANGE CONFIGURATION OF DEVICE
-
         # BEGIN CYCLIC MESSAGES
         threading.Thread(target=self.send_messages).start()
         threading.Thread(target=self.sniff_for_answers).start()
 
         # WRITE PARAMETERS OF DEVICE
-        time.sleep(0.5)
-        write_msg = get_write_request_msg(
-            ip=self.device_ip, device=self.device, auuid=self.auuid
-        )
-        ans, _ = sr(write_msg, iface=self.iface, timeout=2, multi=True, verbose=False)
-
-        write_rsp = DceRpc(ans[-1].answer[Raw].load)
-
-        if not write_rsp.haslayer("PNIOServiceResPDU"):
-            print("WRITE NOT SUCCESSFUL!")
-            print("ABORT")
-        dcp_pkt = connect_rsp["PNIOServiceResPDU"]
-        # status = 0: "Ok"
-        if dcp_pkt.status != 0:
-            print("WRITE NOT SUCCESSFUL!")
-            print("ABORT")
-        # END WRITE PARAMETERS OF DEVICE
 
         # ANNOUNCE PARAMETER END
         param_end_msg = get_parameter_end_msg(ip=self.device_ip, auuid=self.auuid)
