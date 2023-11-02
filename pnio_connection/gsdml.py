@@ -73,7 +73,7 @@ class Module:
             if submodule.id == id:
                 return submodule
 
-def parse_slots(t: str) -> frozenset[int]:
+def parse_range(t: str) -> frozenset[int]:
     if ".." in t:
         min, max = [int(x, 0) for x in t.split("..")]
         return frozenset(range(min, max+1))
@@ -114,7 +114,7 @@ class GSDML:
             Module(
                 id=self.dap.get("ID"),
                 ident=int(self.dap.get("ModuleIdentNumber"), 0),
-                slots=parse_slots(self.dap.get("FixedInSlots")),
+                slots=parse_range(self.dap.get("FixedInSlots")),
                 submodules=self._submodules(self.dap),
             ),
         ]
@@ -124,7 +124,7 @@ class GSDML:
             modules.append(Module(
                 id=module.get("ID"),
                 ident=int(module.get("ModuleIdentNumber"), 0),
-                slots=parse_slots(mir.get("AllowedInSlots")),
+                slots=parse_range(mir.get("AllowedInSlots")),
                 submodules=self._submodules(module),
             ))
         self.modules = modules
@@ -146,6 +146,12 @@ class GSDML:
                 enum = None
                 if value_item := field.get("ValueItemTarget"):
                     enum = self.value_list[value_item]
+                if allowed_values := field.get("AllowedValues"):
+                    allowed_values = parse_range(allowed_values)
+                    if enum:
+                        enum = {k: v for k,v in enum.items() if v in allowed_values}
+                    else:
+                        enum = {str(v): v for v in allowed_values}
                 fields.append(ParameterField(
                     offset=offset,
                     data_type=data_type,
@@ -167,7 +173,7 @@ class GSDML:
                 id=submodule.get("ID"),
                 ident=int(submodule.get("SubmoduleIdentNumber"), 0),
                 # spec says default is 1 if omitted
-                subslots=parse_slots(submodule.get("FixedInSubslots", "1")),
+                subslots=parse_range(submodule.get("FixedInSubslots", "1")),
                 input_data=[self._parse_dataitem(e) for e in submodule.findall("./IOData/Input/DataItem", NS)],
                 output_data=[self._parse_dataitem(e) for e in submodule.findall("./IOData/Output/DataItem", NS)],
                 parameters=self._parameters(submodule),
@@ -176,7 +182,7 @@ class GSDML:
             out.append(Submodule(
                 id=submodule.get("ID"),
                 ident=int(submodule.get("SubmoduleIdentNumber"), 0),
-                subslots=parse_slots(submodule.get("SubslotNumber", "1")),
+                subslots=parse_range(submodule.get("SubslotNumber", "1")),
             ))
         return out
 
