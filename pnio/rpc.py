@@ -2,7 +2,6 @@ from asyncio import get_running_loop, DatagramProtocol, DatagramTransport
 from contextlib import asynccontextmanager
 import enum
 import logging
-import random
 import time
 import socket
 import uuid
@@ -10,24 +9,9 @@ from typing import Any, Optional, Tuple
 
 from scapy.packet import Packet
 from scapy.plist import PacketList
-from scapy.layers.l2 import Ether
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
 from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
-from scapy.interfaces import resolve_iface
 from scapy.config import conf
-from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
-from .pnio_dcp import (
-    ProfinetDCP,
-    ProfinetDCPIdentifyReq,
-    ProfinetDCPSetReq,
-    ProfinetDCPIdentifyRes,
-    ProfinetDCPSetRes,
-    DCPRequestBlock,
-    NameOfStationBlock,
-    IPParameterBlock,
-    DCP_SERVICE_ID,
-    DCP_SERVICE_TYPE,
-)
 
 LOGGER = logging.getLogger("profinet.rpc")
 
