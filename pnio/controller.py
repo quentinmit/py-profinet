@@ -1,18 +1,24 @@
+from contextlib import asynccontextmanager
+import logging
+
 from .config import ConfigReader
-from .rpc import ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
+from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
 from .rt import RTProtocol, create_rt_endpoint
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
 
 from scapy.layers.l2 import Ether
 
 
+LOGGER = logging.getLogger("profinet.controller")
+
+
 class ProfinetDevice:
     rt: RTProtocol
-    cmrpc: ContextManagerActivity
+    assoc: Association
 
-    def __init__(self, rt: RTProtocol, cmrpc: ContextManagerActivity):
+    def __init__(self, rt: RTProtocol, assoc: Association):
         self.rt = rt
-        self.cmrpc = cmrpc
+        self.assoc = assoc
 
 
 class ProfinetInterface:
@@ -27,7 +33,8 @@ class ProfinetInterface:
         self.rt = rt
         self.rpc = rpc
 
-    async def open_device(self, name_of_station: str) -> ProfinetDevice:
+    @asynccontextmanager
+    async def open_device(self, name_of_station: str, extra_blocks=[]) -> ProfinetDevice:
         pkt = await self.rt.dcp_identify(name_of_station)
         mac = pkt[Ether].src
         # TODO: Set the IP if it's not already set correctly.
@@ -43,10 +50,23 @@ class ProfinetInterface:
             device_id=pkt[DeviceIDBlock].device_id,
             instance=instance,
         )
-        return ProfinetDevice(rt=self.rt, cmrpc=cmrpc)
+        async with cmrpc.connect(
+                cm_mac_addr=self.rt.src_mac,
+                extra_blocks=extra_blocks,
+        ) as assoc:
+            yield ProfinetDevice(rt=self.rt, assoc=assoc)
 
+    @asynccontextmanager
     async def open_device_from_config(self, config: ConfigReader) -> ProfinetDevice:
-        return await self.open_device(config.config["name_of_station"])
+        async with self.open_device(
+                name_of_station=config.config["name_of_station"],
+                extra_blocks=config.connect_blocks,
+        ) as device:
+            # TODO: Use IODWriteMultipleReq?
+            async for slot, subslot, index, value in config.parameter_values:
+                await device.assoc.write(slot, subslot, index, value)
+            # TODO: Send ParameterEnd
+            yield device
 
 
 async def create_profinet_interface(ifname: str) -> ProfinetInterface:

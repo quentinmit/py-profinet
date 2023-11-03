@@ -1,6 +1,7 @@
+import itertools
 from dataclasses import dataclass
 import os.path
-from typing import Dict, List
+import struct
 import yaml
 
 from .gsdml import GSDML, Module, Submodule
@@ -12,22 +13,51 @@ class Subslot:
     subslot: int
     id: int
     submodule: Submodule
-    parameters: Dict[int, bytes]
+    parameters: dict[int, bytes]
 
 @dataclass
 class Slot:
     slot: int
     id: int
     module: Module
-    subslots: List[Subslot]
+    subslots: list[Subslot]
 
 class ConfigReader:
     def __init__(self, path: str):
         self.config = yaml.safe_load(open(path))
         self.gsdml = GSDML(os.path.join(os.path.dirname(path), self.config["gsdml"]))
 
+    def _parse_parameters(self, submodule: Submodule, parameters: dict[str, str|int|bool]) -> dict[int, bytes]:
+        out = {}
+        parameter_by_field_name = {pf.name: p for p in submodule.parameters for pf in p.fields}
+        for parameter, fields in itertools.groupby(
+                parameters.items(),
+                key=lambda i: parameter_by_field_name.get(i[0]),
+        ):
+            if not parameter:
+                raise ValueError(f'Unknown parameter field "{next(fields)[0]}". Supported parameter fields are {", ".join(parameter_by_field_name.keys())}.')
+            fields = dict(fields)
+            parameter_bytes = bytearray(parameter.length)
+            for field in parameter.fields:
+                value = fields.get(field.name, field.default_value)
+                if isinstance(value, bool):
+                    value = int(value)
+                if isinstance(value, str):
+                    if not field.enum:
+                        raise ValueError(f'Parameter "{field.name}" does not support string values')
+                    if value not in field.enum:
+                        raise ValueError(f'Unsupported value "{value}" for parameter field "{field.name}". Supported values are {", ".join(field.enum.keys())}')
+                    value = field.enum[value]
+                match field.offset:
+                    case (i, j):
+                        parameter_bytes[i] |= value << j
+                    case offset:
+                        struct.pack_into(field.data_type.format, parameter_bytes, offset, value)
+            out[parameter.index] = parameter_bytes
+        return out
+
     @property
-    def slots(self) -> List[Slot]:
+    def slots(self) -> list[Slot]:
         out = []
         for slot, module in sorted(self.config["slots"].items()):
             g_module = self.gsdml.get_module(module["id"])
@@ -53,8 +83,7 @@ class ConfigReader:
                     subslot=subslot,
                     id=submodule["id"],
                     submodule=g_submodule,
-                    # TODO: parameters
-                    parameters={},
+                    parameters=self._parse_parameters(g_submodule, submodule.get("parameters", {})),
                 ))
             out.append(s)
         return out

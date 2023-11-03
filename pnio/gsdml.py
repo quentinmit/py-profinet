@@ -24,6 +24,14 @@ class DataType(Enum):
             return 4
         raise ValueError("unknown data type")
 
+    @property
+    def format(self):
+        return {
+            self.Unsigned8: ">B",
+            self.Unsigned16: ">H",
+            self.Unsigned32: ">I",
+        }[self]
+
 @dataclass
 class DataItem:
     data_type: DataType
@@ -35,6 +43,7 @@ class ParameterField:
     offset: int|tuple[int, int]
     data_type: DataType
     name: str
+    default_value: int
     enum: Optional[dict[str, int]]
 
 @dataclass
@@ -106,7 +115,7 @@ class GSDML:
         self.value_list = {}
         for value_item in self.doc.findall(".//ValueList/ValueItem", NS):
             self.value_list[value_item.get("ID")] = {
-                self.text[a.get("TextId")]: int(a.get("Content"), 0)
+                self.text[a.get("TextId")].strip(): int(a.get("Content"), 0)
                 for a in value_item.findall("./Assignments/Assign", NS)
             }
 
@@ -156,6 +165,7 @@ class GSDML:
                     offset=offset,
                     data_type=data_type,
                     name=self.text[field.get("TextId")],
+                    default_value=int(field.get("DefaultValue"), 0),
                     enum=enum,
                 ))
             out.append(Parameter(
