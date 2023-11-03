@@ -361,6 +361,7 @@ class Association:
     async def parameter_end(self):
         req = IODControlReq(
             ARUUID=self.aruuid,
+            SessionKey=self.session_key,
             ControlCommand_PrmEnd=0x0001,
         )
         return await self.protocol.rpc(opnum=RPC_IO_OPNUM.Control, blocks=[req])
