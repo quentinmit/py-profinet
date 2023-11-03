@@ -3,12 +3,11 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
-from pnio_rpc import IOCRBlockReq
-
 from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
 from .rt import RTProtocol, create_rt_endpoint
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
+from .pnio_rpc import IOCRBlockReq
 
 from scapy.layers.l2 import Ether
 
