@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
+
+from pnio_rpc import IOCRBlockReq
 
 from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
@@ -13,13 +16,33 @@ from scapy.layers.l2 import Ether
 LOGGER = logging.getLogger("profinet.controller")
 
 
+def cycle_count() -> int:
+    return int(asyncio.get_running_loop().time() * 32000)
+
+
 class ProfinetDevice:
     rt: RTProtocol
     assoc: Association
+    mac: str | bytes
 
-    def __init__(self, rt: RTProtocol, assoc: Association):
+    def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
         self.rt = rt
         self.assoc = assoc
+        self.mac = mac
+
+    async def _cyclic_data_task(self, cr: IOCRBlockReq):
+        cycle_interval = cr.SendClockFactor * cr.ReductionRatio
+        while True:
+            now = cycle_count()
+            next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
+            await asyncio.sleep((next_cycle_count - now) / 32000)
+            data = bytearray(40) # TODO
+            await self.rt.send_cyclic_data_frame(
+                data=data,
+                frame_id=cr.FrameID,
+                dst_mac=self.mac,
+                cycle_counter=next_cycle_count,
+            )
 
 
 class ProfinetInterface:
@@ -55,20 +78,25 @@ class ProfinetInterface:
                 cm_mac_addr=self.rt.src_mac,
                 extra_blocks=extra_blocks,
         ) as assoc:
-            yield ProfinetDevice(rt=self.rt, assoc=assoc)
+            yield ProfinetDevice(mac=mac, rt=self.rt, assoc=assoc)
 
     @asynccontextmanager
     async def open_device_from_config(self, config: ConfigReader) -> AsyncGenerator[ProfinetDevice, None]:
-        async with self.open_device(
-                name_of_station=config.config["name_of_station"],
-                extra_blocks=config.connect_blocks,
-        ) as device:
-            # TODO: Use IODWriteMultipleReq?
-            for slot, subslot, index, value in config.parameter_values:
-                await device.assoc.write(data=value, slot=slot, subslot=subslot, index=index)
-            await device.assoc.parameter_end()
-            # TODO: Await ApplicationReady
-            yield device
+        connect_blocks = config.connect_blocks
+        async with asyncio.TaskGroup() as tg:
+            async with self.open_device(
+                    name_of_station=config.config["name_of_station"],
+                    extra_blocks=connect_blocks,
+            ) as device:
+                for block in connect_blocks:
+                    if isinstance(block, IOCRBlockReq) and block.IOCRType == "OutputCR":
+                        tg.create_task(device._cyclic_data_task(block))
+                # TODO: Use IODWriteMultipleReq?
+                for slot, subslot, index, value in config.parameter_values:
+                    await device.assoc.write(data=value, slot=slot, subslot=subslot, index=index)
+                await device.assoc.parameter_end()
+                # TODO: Await ApplicationReady
+                yield device
 
 
 async def create_profinet_interface(ifname: str) -> ProfinetInterface:

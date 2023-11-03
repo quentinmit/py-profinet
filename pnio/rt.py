@@ -52,7 +52,7 @@ class RTProtocol(DatagramProtocol):
         self.src_mac = sockname[4]
         return super().connection_made(transport)
 
-    async def dcp_req(self, req, dst_mac=MAC_PROFINET_BCAST):
+    async def dcp_req(self, req, dst_mac: str|bytes = MAC_PROFINET_BCAST):
         xid = random.randint(0, 65535)
         pkt = (
             Ether(dst=dst_mac, src=self.src_mac)
@@ -119,6 +119,20 @@ class RTProtocol(DatagramProtocol):
             key = ("dcp", xid)
         if key and key in self.pending_requests:
             self.pending_requests[key].put_nowait(pkt)
+
+    async def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
+        if cycle_counter is None:
+            # Unit is steps of 31.25 µs
+            cycle_counter = int(time.time() * 32000) & 0xFFFF
+        pkt = (
+            Ether(dst=dst_mac, src=self.src_mac, type=ETHERTYPE_PROFINET)
+            / ProfinetIO(frameID=frame_id)
+            / PNIORealTimeCyclicPDU(
+                cycleCounter=cycle_counter,
+                data=[data],
+            )
+        )
+        self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
 
 
 class debug:
