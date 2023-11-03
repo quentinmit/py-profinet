@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+from collections.abc import AsyncGenerator
 
 from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
@@ -34,7 +35,7 @@ class ProfinetInterface:
         self.rpc = rpc
 
     @asynccontextmanager
-    async def open_device(self, name_of_station: str, extra_blocks=[]) -> ProfinetDevice:
+    async def open_device(self, name_of_station: str, extra_blocks=[]) -> AsyncGenerator[ProfinetDevice, None]:
         pkt = await self.rt.dcp_identify(name_of_station)
         mac = pkt[Ether].src
         # TODO: Set the IP if it's not already set correctly.
@@ -57,7 +58,7 @@ class ProfinetInterface:
             yield ProfinetDevice(rt=self.rt, assoc=assoc)
 
     @asynccontextmanager
-    async def open_device_from_config(self, config: ConfigReader) -> ProfinetDevice:
+    async def open_device_from_config(self, config: ConfigReader) -> AsyncGenerator[ProfinetDevice, None]:
         async with self.open_device(
                 name_of_station=config.config["name_of_station"],
                 extra_blocks=config.connect_blocks,
