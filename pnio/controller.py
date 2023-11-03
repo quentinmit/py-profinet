@@ -64,8 +64,9 @@ class ProfinetInterface:
         ) as device:
             # TODO: Use IODWriteMultipleReq?
             for slot, subslot, index, value in config.parameter_values:
-                await device.assoc.write(slot, subslot, index, value)
-            # TODO: Send ParameterEnd
+                await device.assoc.write(data=value, slot=slot, subslot=subslot, index=index)
+            await device.assoc.parameter_end()
+            # TODO: Await ApplicationReady
             yield device
 
 

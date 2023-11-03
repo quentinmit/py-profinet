@@ -358,6 +358,13 @@ class Association:
         req = IODWriteReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index) / data
         return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
 
+    async def parameter_end(self):
+        req = IODControlReq(
+            ARUUID=self.aruuid,
+            ControlCommand_PrmEnd=0x0001,
+        )
+        return await self.protocol.rpc(opnum=RPC_IO_OPNUM.Control, blocks=[req])
+
 class ContextManagerActivity(PnioRpcActivity):
     def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
         super().__init__(protocol=protocol, dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)

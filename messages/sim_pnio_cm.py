@@ -36,31 +36,6 @@ def get_application_ready_res_msg(ip, auuid, obj_uuid, interface_uuid, activity_
     return ip_msg / udp_msg / dcerpc / pnio_serv_pdu
 
 
-def get_parameter_end_msg(ip, auuid):
-    ip_msg = IP(dst=ip)
-    udp_msg = UDP(
-        sport=49153,
-        dport=34964,
-    )
-    dcerpc = DceRpc(
-        type="request",
-        flags1=0x28,
-        flags2=0x0,
-        opnum=4,
-        endianness="little",
-        encoding="ASCII",
-        float="IEEE",
-        interface_uuid="dea00001-6c97-11d1-8271-00a02442df7d",
-        activity="df16c5b3-2794-11b2-8000-a381734cba00",
-    )
-
-    pnio_iod_control_req = IODControlReq(ControlCommand_PrmEnd=0x0001, ARUUID=auuid)
-
-    pnio_serv_pdu = PNIOServiceReqPDU(args_max=16696, blocks=[pnio_iod_control_req])
-
-    return ip_msg / udp_msg / dcerpc / pnio_serv_pdu
-
-
 def get_ping_msg(ip):
     ip_msg = IP(dst=ip)
     udp_msg = UDP(
