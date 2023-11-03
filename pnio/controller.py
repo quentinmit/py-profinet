@@ -31,9 +31,11 @@ class ProfinetDevice:
 
     async def _cyclic_data_task(self, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
+        LOGGER.debug("Starting cyclic data for output frame 0x%04x every 0x%04x cycles", cr.FrameID, cycle_interval)
         while True:
             now = cycle_count()
             next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
+            LOGGER.debug("Current cycle counter %d, next cycle counter %d", now, next_cycle_count)
             await asyncio.sleep((next_cycle_count - now) / 32000)
             data = bytearray(40) # TODO
             await self.rt.send_cyclic_data_frame(
@@ -88,7 +90,8 @@ class ProfinetInterface:
                     extra_blocks=connect_blocks,
             ) as device:
                 for block in connect_blocks:
-                    if isinstance(block, IOCRBlockReq) and block.IOCRType == "OutputCR":
+                    if isinstance(block, IOCRBlockReq) and block.IOCRType == 2: # output
+                        LOGGER.info("Starting cyclic data task for %s", block.show2(dump=True))
                         tg.create_task(device._cyclic_data_task(block))
                 # TODO: Use IODWriteMultipleReq?
                 for slot, subslot, index, value in config.parameter_values:

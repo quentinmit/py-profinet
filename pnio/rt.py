@@ -130,12 +130,12 @@ class RTProtocol(DatagramProtocol):
     async def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
         if cycle_counter is None:
             # Unit is steps of 31.25 µs
-            cycle_counter = int(time.time() * 32000) & 0xFFFF
+            cycle_counter = int(time.time() * 32000)
         pkt = (
             Ether(dst=dst_mac, src=self.src_mac, type=ETHERTYPE_PROFINET)
             / ProfinetIO(frameID=frame_id)
             / PNIORealTimeCyclicPDU(
-                cycleCounter=cycle_counter,
+                cycleCounter=cycle_counter & 0xFFFF,
                 data=[data],
             )
         )
