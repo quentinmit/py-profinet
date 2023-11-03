@@ -66,7 +66,7 @@ class RTProtocol(DatagramProtocol):
         queue = Queue()
         try:
             self.pending_requests[("dcp", xid)] = queue
-            self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
+            self.send(pkt)
             while True:
                 pkt = await queue.get()
                 try:
@@ -101,6 +101,13 @@ class RTProtocol(DatagramProtocol):
             dst_mac=mac,
         )
 
+    def send(self, pkt: Packet):
+        pkt.sent_time = pkt.time = time.time()
+        LOGGER.debug("sending packet:\n%s", pkt.show2(dump=True))
+        if conf.debug_match:
+            debug.sent.append(pkt)
+        self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
+
     def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
         # TODO: Consider switching to recvmsg
         try:
@@ -132,7 +139,7 @@ class RTProtocol(DatagramProtocol):
                 data=[data],
             )
         )
-        self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
+        self.send(pkt)
 
 
 class debug:
