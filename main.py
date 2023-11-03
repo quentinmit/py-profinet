@@ -9,7 +9,7 @@ from pnio.controller import ProfinetInterface
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('filename', required=True)
+    parser.add_argument('filename')
     parser.add_argument('-v', '--verbose', action='count', default=0)
     args = parser.parse_args()
 

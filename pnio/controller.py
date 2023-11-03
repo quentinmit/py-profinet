@@ -26,7 +26,7 @@ class ProfinetInterface:
     rpc: DceRpcProtocol
 
     @classmethod
-    async def from_config(cls, config: ConfigReader) -> ProfinetInterface:
+    async def from_config(cls, config: ConfigReader):
         return await create_profinet_interface(config.config["ifname"])
 
     def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol):
@@ -63,7 +63,7 @@ class ProfinetInterface:
                 extra_blocks=config.connect_blocks,
         ) as device:
             # TODO: Use IODWriteMultipleReq?
-            async for slot, subslot, index, value in config.parameter_values:
+            for slot, subslot, index, value in config.parameter_values:
                 await device.assoc.write(slot, subslot, index, value)
             # TODO: Send ParameterEnd
             yield device
