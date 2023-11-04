@@ -1,4 +1,5 @@
 from asyncio import AbstractEventLoop, Future, Queue, get_running_loop, DatagramProtocol, DatagramTransport
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 import enum
 import logging
@@ -34,10 +35,17 @@ PF_CMRPC_MUST_RECV_FRAG_SIZE = 1464
 
 class DceRpcProtocol(DatagramProtocol):
     pending_requests: dict[tuple[uuid.UUID, int], Future]
+    registered_handlers: dict[tuple[uuid.UUID, uuid.UUID], Callable[[DceRpc4], Awaitable[Packet]]]
+    instance: int
 
     def __init__(self):
         self.pending_requests = dict()
+        self.registered_handlers = dict()
+        self.instance = 0
         super().__init__()
+
+    def register_handler(self, object: uuid.UUID, interface: uuid.UUID, handler: Callable[[DceRpc4], Awaitable[Packet]]):
+        self.registered_handlers[object, interface] = handler
 
     def connection_made(self, transport: DatagramTransport) -> None:
         LOGGER.info("connection made: %s", transport)
@@ -71,26 +79,40 @@ class DceRpcProtocol(DatagramProtocol):
         if fut := self.pending_requests.get(key):
             fut.set_result(pkt)
             del self.pending_requests[key]
+        elif pkt.ptype == 0: # Request
+            get_running_loop().create_task(self._handle_request(pkt, src_addr))
         else:
             LOGGER.warning("received unknown sequence number: %s", pkt.show2(dump=True))
+
+    async def _handle_request(self, pkt: DceRpc4, src_addr: tuple[str | Any, int]):
+        out = DceRpc4(
+            ptype="reject", # "fault" is also an option
+            flags1=["no_frag_ack"],
+            serial_hi=pkt.serial_hi
+            object=pkt.object,
+            if_id=pkt.if_id,
+            act_id=pkt.act_id,
+            if_vers=pkt.if_vers,
+            seqnum=0, # TODO
+            opnum=pkt.opnum,
+            fragnum=0, # TODO: Support fragmentation
+            serial_lo=pkt.serial_lo,
+        )
+        try:
+            assert "idempotent" in pkt.flags1, "can only handle idempotent requests"
+            handler = self.registered_handlers[(pkt.object, pkt.if_id)]
+            res = await handler(pkt)
+            out.ptype = "response"
+            out = out / res
+        except:
+            logging.exception("Failed to handle incoming request")
+        self.send(out, src_addr)
 
     async def call_rpc(self, req: DceRpc4, dst_addr: tuple[str, int]):
         fut = get_running_loop().create_future()
         try:
             self.pending_requests[(req.act_id, req.seqnum)] = fut
-            LOGGER.debug("sending packet:\n%s", req.show2(dump=True))
-            req.sent_time = req.time = time.time()
-            if conf.debug_match:
-                from scapy.layers.inet import IP, UDP
-                src_addr = self.transport.get_extra_info('sockname', (None, None))
-                p = (
-                    IP(src=src_addr[0], dst=dst_addr[0])
-                    / UDP(sport=src_addr[1], dport=dst_addr[1])
-                    / req
-                )
-                p.time = req.time
-                debug.sent.append(p)
-            self.transport.sendto(bytes(req), dst_addr)
+            self.send(req, dst_addr)
             # TODO: Timeout?
             # TODO: Retries
             res = await fut
@@ -102,6 +124,22 @@ class DceRpcProtocol(DatagramProtocol):
             raise DceRpcError(int.from_bytes(res.payload.load, "little"))
         else:
             raise ValueError("unexpected response type: %s" % (res.ptype,))
+
+    def send(self, pkt: DceRpc4, dst_addr: tuple[str, int]):
+        LOGGER.debug("sending packet:\n%s", pkt.show2(dump=True))
+        pkt.sent_time = pkt.time = time.time()
+        if conf.debug_match:
+            from scapy.layers.inet import IP, UDP
+            src_addr = self.transport.get_extra_info('sockname', (None, None))
+            p = (
+                IP(src=src_addr[0], dst=dst_addr[0])
+                / UDP(sport=src_addr[1], dport=dst_addr[1])
+                / pkt
+            )
+            p.time = pkt.time
+            debug.sent.append(p)
+        self.transport.sendto(bytes(pkt), dst_addr)
+
 
 async def create_rpc_endpoint(port: int = socket.getservbyname("profinet-cm"), loop: AbstractEventLoop | None = None) -> DceRpcProtocol:
     if loop is None:
@@ -310,10 +348,10 @@ def create_pn_uuid(vendor_id, device_id, instance=0):
     ))
 
 class Association:
-    def __init__(self, protocol):
-        self.protocol = protocol
-        self.session_key = protocol.session_key
-        protocol.session_key += 1
+    def __init__(self, activity):
+        self.activity = activity
+        self.session_key = activity.session_key
+        activity.session_key += 1
         self.aruuid = uuid.uuid4()
 
     async def _connect(self, cm_mac_addr, easy_supervisor=False, extra_blocks=[]):
@@ -321,7 +359,7 @@ class Association:
             ARUUID=self.aruuid,
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
             CMInitiatorMacAdd=cm_mac_addr,
-            CMInitiatorObjectUUID=create_pn_uuid(vendor_id=0xf000, device_id=0),
+            CMInitiatorObjectUUID=self.activity.cm_object_uuid,
             CMInitiatorStationName="py-profinet",
             CMInitiatorActivityTimeoutFactor=1000,
             ARProperties_StartupMode="Legacy", # "Legacy" is Recommended
@@ -336,7 +374,7 @@ class Association:
             alarm_block_req = AlarmCRBlockReq()
             blocks.append(alarm_block_req)
         blocks.extend(extra_blocks)
-        res = await self.protocol.rpc(
+        res = await self.activity.rpc(
             opnum=RPC_IO_OPNUM.Connect,
             blocks=blocks,
         )
@@ -347,16 +385,16 @@ class Association:
         req = IODControlReq(ARUUID=self.aruuid, SessionKey=self.session_key, ControlCommand_Release=1)
         # Spec says a successful release should return back the request with
         # ControlCommand_Done=1, but it appears to return nothing.
-        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Release, blocks=[req]))
+        return (await self.activity.rpc(opnum=RPC_IO_OPNUM.Release, blocks=[req]))
 
     async def read(self, slot=0, subslot=0, index=0):
         req = IODReadReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index, recordDataLength=0x8000)
-        blocks = await self.protocol.rpc(opnum=RPC_IO_OPNUM.Read, blocks=[req])
+        blocks = await self.activity.rpc(opnum=RPC_IO_OPNUM.Read, blocks=[req])
         return blocks[1:]
 
     async def write(self, data, slot=0, subslot=0, index=0):
         req = IODWriteReq(seqNum=1, ARUUID=self.aruuid, API=0x0, slotNumber=slot, subslotNumber=subslot, index=index) / data
-        return (await self.protocol.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
+        return (await self.activity.rpc(opnum=RPC_IO_OPNUM.Write, blocks=[req]))[0]
 
     async def parameter_end(self):
         req = IODControlReq(
@@ -364,13 +402,30 @@ class Association:
             SessionKey=self.session_key,
             ControlCommand_PrmEnd=0x0001,
         )
-        return await self.protocol.rpc(opnum=RPC_IO_OPNUM.Control, blocks=[req])
+        return await self.activity.rpc(opnum=RPC_IO_OPNUM.Control, blocks=[req])
 
 class ContextManagerActivity(PnioRpcActivity):
     def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
         super().__init__(protocol=protocol, dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
         self.aruuid = 0
         self.session_key = 1
+        self.cm_object_uuid = create_pn_uuid(vendor_id=0xf000, device_id=0, instance=protocol.instance)
+        protocol.instance += 1
+        protocol.register_handler(object=self.cm_object_uuid, interface=RPC_INTERFACE_UUID["UUID_IO_ControllerInterface"], handler=self._handle_request)
+
+    async def _handle_request(self, pkt: Packet) -> Packet:
+        if isinstance(pkt.payload, PNIOServiceReqPDU):
+            req = pkt.payload.blocks[0]
+            if isinstance(req, IODControlReq) and req.ControlCommand_ApplicationReady:
+                # TODO: Check and dispatch to Association using req.ARUUID
+                return PNIOServiceResPDU(
+                    blocks=[IODControlRes(
+                        ARUUID=req.ARUUID,
+                        SessionKey=req.SessionKey,
+                        ControlCommand_Done=1,
+                    )],
+                )
+        raise NotImplementedError("unknown request")
 
     @asynccontextmanager
     async def connect(self, **kwargs):
