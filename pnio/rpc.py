@@ -11,7 +11,7 @@ from typing import Any, Optional, Tuple
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
+from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.config import conf
 
 LOGGER = logging.getLogger("profinet.rpc")
@@ -87,8 +87,8 @@ class DceRpcProtocol(DatagramProtocol):
     async def _handle_request(self, pkt: DceRpc4, src_addr: tuple[str | Any, int]):
         out = DceRpc4(
             ptype="reject", # "fault" is also an option
-            flags1=["no_frag_ack"],
-            serial_hi=pkt.serial_hi
+            flags1=["last_frag", "no_frag_ack"],
+            serial_hi=pkt.serial_hi,
             object=pkt.object,
             if_id=pkt.if_id,
             act_id=pkt.act_id,
@@ -420,6 +420,7 @@ class ContextManagerActivity(PnioRpcActivity):
                 # TODO: Check and dispatch to Association using req.ARUUID
                 return PNIOServiceResPDU(
                     blocks=[IODControlRes(
+                        block_type="IOXBlockRes_connect",
                         ARUUID=req.ARUUID,
                         SessionKey=req.SessionKey,
                         ControlCommand_Done=1,
