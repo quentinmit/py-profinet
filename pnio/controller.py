@@ -14,6 +14,7 @@ from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
 from .pnio_rpc import IOCRBlockReq
 
 from scapy.layers.l2 import Ether
+from scapy.utils import hexdump
 
 
 LOGGER = logging.getLogger("profinet.controller")
@@ -83,16 +84,18 @@ class ProfinetDevice:
                 subslots=out_subslots,
             )
         def _handle_input_frame(frame: ProfinetIO):
-            values = struct.unpack_from(input_format, buffer=frame[PNIORealTimeCyclicDefaultRawData].data)
+            data = frame[PNIORealTimeCyclicDefaultRawData].data
+            LOGGER.debug("Format: %s\nFields: %r\n%s", input_format, input_fields, hexdump(data, dump=1))
+            values = struct.unpack_from(input_format, buffer=data)
             for (slot, subslot, name), value in zip(reversed(input_fields), reversed(values)):
                 subslot = self.slots[slot].subslots[subslot]
                 if name == "IOPS":
-                    subslot.input_iops = PNIORealTime_IOxS([value])
+                    subslot.input_iops = PNIORealTime_IOxS(bytes([value]))
                 elif name == "IOCS":
-                    subslot.output_iocs = PNIORealTime_IOxS([value])
+                    subslot.output_iocs = PNIORealTime_IOxS(bytes([value]))
                 elif subslot.input_iops.dataState == 1: # IOPS
                     subslot.input_data[name] = value
-            LOGGER.info("Input frame:", self.slots)
+            LOGGER.info("Input frame: %r", self.slots)
         self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
 
 
