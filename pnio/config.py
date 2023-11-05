@@ -211,7 +211,7 @@ class ConfigReader:
 
     @property
     def input_struct(self):
-        format = ""
+        format = ">"
         input_fields = []
         for slot in self.slots:
             for subslot in slot.subslots:
