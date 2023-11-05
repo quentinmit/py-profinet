@@ -217,11 +217,11 @@ class ConfigReader:
             for subslot in slot.subslots:
                 for data_item in subslot.submodule.input_data:
                     format += data_item.data_type.format
-                    input_fields += (subslot.slot, subslot.subslot, data_item.name)
+                    input_fields.append((subslot.slot, subslot.subslot, data_item.name))
                 if subslot.submodule.input_data or not subslot.submodule.output_data:
                     format += "B"
-                    input_fields += (subslot.slot, subslot.subslot, "IOPS")
+                    input_fields.append((subslot.slot, subslot.subslot, "IOPS"))
                 if subslot.submodule.output_data:
                     format += "B"
-                    input_fields += (subslot.slot, subslot.subslot, "IOCS")
+                    input_fields.append((subslot.slot, subslot.subslot, "IOCS"))
         return format, input_fields

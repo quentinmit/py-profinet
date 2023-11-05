@@ -40,13 +40,13 @@ class ProfinetDevice:
     rt: RTProtocol
     assoc: Association
     mac: str | bytes
-
     slots: dict[int, Slot]
 
     def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
         self.rt = rt
         self.assoc = assoc
         self.mac = mac
+        self.slots = {}
 
     async def _cyclic_data_task(self, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
