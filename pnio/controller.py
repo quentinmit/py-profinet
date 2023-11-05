@@ -99,6 +99,7 @@ class ProfinetInterface:
                 await device.assoc.parameter_end()
                 # TODO: Await ApplicationReady
                 yield device
+                tg._abort()
 
 
 async def create_profinet_interface(ifname: str) -> ProfinetInterface:
