@@ -52,7 +52,7 @@ class ConfigReader:
                     case (i, j):
                         parameter_bytes[i] |= value << j
                     case offset:
-                        struct.pack_into(field.data_type.format, parameter_bytes, offset, value)
+                        struct.pack_into(">" + field.data_type.format, parameter_bytes, offset, value)
             out[parameter.index] = parameter_bytes
         return out
 
@@ -208,3 +208,20 @@ class ConfigReader:
             for subslot in slot.subslots:
                 for index, value in subslot.parameters.items():
                     yield (slot.slot, subslot.subslot, index, value)
+
+    @property
+    def input_struct(self):
+        format = ""
+        input_fields = []
+        for slot in self.slots:
+            for subslot in slot.subslots:
+                for data_item in subslot.submodule.input_data:
+                    format += data_item.data_type.format
+                    input_fields += (subslot.slot, subslot.subslot, data_item.name)
+                if subslot.submodule.input_data or not subslot.submodule.output_data:
+                    format += "B"
+                    input_fields += (subslot.slot, subslot.subslot, "IOPS")
+                if subslot.submodule.output_data:
+                    format += "B"
+                    input_fields += (subslot.slot, subslot.subslot, "IOCS")
+        return format, input_fields

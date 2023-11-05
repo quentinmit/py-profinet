@@ -1,7 +1,11 @@
 from contextlib import asynccontextmanager
 import asyncio
+from dataclasses import dataclass, field
 import logging
 from collections.abc import AsyncGenerator
+import struct
+
+from .pnio import PNIORealTime_IOxS, PNIORealTimeCyclicDefaultRawData, ProfinetIO
 
 from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
@@ -19,10 +23,25 @@ def cycle_count() -> int:
     return int(asyncio.get_running_loop().time() * 32000)
 
 
+@dataclass
+class Subslot:
+    input_data: dict[str, int | None]
+    output_data: dict[str, int | None]
+    input_iops: PNIORealTime_IOxS = field(default_factory=lambda: PNIORealTime_IOxS(b"\0"))
+    output_iocs: PNIORealTime_IOxS = field(default_factory=lambda: PNIORealTime_IOxS(b"\0"))
+
+
+@dataclass
+class Slot:
+    subslots: dict[int, Subslot]
+
+
 class ProfinetDevice:
     rt: RTProtocol
     assoc: Association
     mac: str | bytes
+
+    slots: dict[int, Slot]
 
     def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
         self.rt = rt
@@ -44,6 +63,37 @@ class ProfinetDevice:
                 dst_mac=self.mac,
                 cycle_counter=next_cycle_count,
             )
+
+    def _register_frames(self, config: ConfigReader):
+        input_format, input_fields = config.input_struct
+        for slot in config.slots:
+            out_subslots = {}
+            for subslot in slot.subslots:
+                out_subslots[subslot.subslot] = Subslot(
+                    input_data={
+                        data_item.name: None
+                        for data_item in subslot.submodule.input_data
+                    },
+                    output_data={
+                        data_item.name: None
+                        for data_item in subslot.submodule.output_data
+                    },
+                )
+            self.slots[slot.slot] = Slot(
+                subslots=out_subslots,
+            )
+        def _handle_input_frame(frame: ProfinetIO):
+            values = struct.unpack_from(input_format, buffer=frame[PNIORealTimeCyclicDefaultRawData].data)
+            for (slot, subslot, name), value in zip(reversed(input_fields), reversed(values)):
+                subslot = self.slots[slot].subslots[subslot]
+                if name == "IOPS":
+                    subslot.input_iops = PNIORealTime_IOxS([value])
+                elif name == "IOCS":
+                    subslot.output_iocs = PNIORealTime_IOxS([value])
+                elif subslot.input_iops.dataState == 1: # IOPS
+                    subslot.input_data[name] = value
+            LOGGER.info("Input frame:", self.slots)
+        self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
 
 
 class ProfinetInterface:
@@ -89,6 +139,7 @@ class ProfinetInterface:
                     name_of_station=config.config["name_of_station"],
                     extra_blocks=connect_blocks,
             ) as device:
+                device._register_frames(config)
                 for block in connect_blocks:
                     if isinstance(block, IOCRBlockReq) and block.IOCRType == 2: # output
                         LOGGER.info("Starting cyclic data task for %s", block.show2(dump=True))

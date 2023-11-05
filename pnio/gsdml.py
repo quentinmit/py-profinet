@@ -27,9 +27,9 @@ class DataType(Enum):
     @property
     def format(self):
         return {
-            self.Unsigned8: ">B",
-            self.Unsigned16: ">H",
-            self.Unsigned32: ">I",
+            self.Unsigned8: "B",
+            self.Unsigned16: "H",
+            self.Unsigned32: "I",
         }[self]
 
 @dataclass

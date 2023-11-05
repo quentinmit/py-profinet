@@ -1,4 +1,5 @@
 from asyncio import Queue, get_running_loop, DatagramProtocol, DatagramTransport, Future
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 import enum
 import logging
@@ -41,9 +42,11 @@ LOGGER = logging.getLogger("profinet.rt")
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
     pending_requests: dict[tuple[str, int], Queue]
+    frame_handlers: dict[int, Callable[[ProfinetIO], None]]
 
     def __init__(self):
         self.pending_requests = {}
+        self.frame_handlers = {}
 
     def connection_made(self, transport: DatagramTransport) -> None:
         self.transport = transport
@@ -124,8 +127,15 @@ class RTProtocol(DatagramProtocol):
         if pkt.haslayer(ProfinetDCP):
             xid = pkt[ProfinetDCP].xid
             key = ("dcp", xid)
+        elif pkt.haslayer(ProfinetIO):
+            frame_id = pkt[ProfinetIO].frameID
+            if handler := self.frame_handlers.get(frame_id):
+                handler(pkt)
         if key and key in self.pending_requests:
             self.pending_requests[key].put_nowait(pkt)
+
+    def register_frame_handler(self, frame_id: int, handler: Callable[[ProfinetIO], None]):
+        self.frame_handlers[frame_id] = handler
 
     async def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
         if cycle_counter is None:
