@@ -169,6 +169,7 @@ class ConfigReader:
                 DataHoldFactor=3, # FIXME
                 DataLength=max(input_frame_offset, 40),
                 FrameID=0x8001,
+                IOCRReference=0x0001,
                 APIs=[
                     IOCRAPI(
                         IODataObjects=input_api_objects,
@@ -183,6 +184,8 @@ class ConfigReader:
                 WatchdogFactor=3, # FIXME
                 DataHoldFactor=3, # FIXME
                 DataLength=max(output_frame_offset, 40),
+                FrameID=0x8002,
+                IOCRReference=0x0002,
                 APIs=[
                     IOCRAPI(
                         IODataObjects=output_api_objects,
