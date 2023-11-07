@@ -80,6 +80,7 @@ class ProfinetDevice:
                             0x80, # TODO: Use PNIORealTime_IOxS
                         )
 
+            LOGGER.debug("Output\n%s", hexdump(data, dump=1))
             await self.rt.send_cyclic_data_frame(
                 data=data,
                 frame_id=cr.FrameID,
@@ -107,7 +108,7 @@ class ProfinetDevice:
             )
         def _handle_input_frame(frame: ProfinetIO):
             data = frame[PNIORealTimeCyclicDefaultRawData].data
-            LOGGER.debug("Format: %s\nFields: %r\n%s", input_format, input_fields, hexdump(data, dump=1))
+            LOGGER.debug("Input\n%s", hexdump(data, dump=1))
             values = struct.unpack_from(input_format, buffer=data)
             for (slot, subslot, name), value in zip(reversed(input_fields), reversed(values)):
                 subslot = self.slots[slot].subslots[subslot]

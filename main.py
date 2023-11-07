@@ -27,7 +27,9 @@ async def main():
         i = 0
         while True:
             j = 0
-            for slot in device.slots.values():
+            for index, slot in device.slots.items():
+                if index == 0:
+                    continue
                 for subslot in slot.subslots.values():
                     for k in subslot.output_data:
                         subslot.output_data[k] = 0x80 | (1 if (i & (1 << j)) else 0)
