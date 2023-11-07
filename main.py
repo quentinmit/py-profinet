@@ -24,7 +24,17 @@ async def main():
     interface = await ProfinetInterface.from_config(config)
 
     async with interface.open_device_from_config(config) as device:
-        await asyncio.sleep(10)
+        i = 0
+        while True:
+            j = 0
+            for slot in device.slots.values():
+                for subslot in slot.subslots.values():
+                    for k in subslot.output_data:
+                        subslot.output_data[k] = 0x80 | (1 if (i & (1 << j)) else 0)
+                        j += 1
+            await asyncio.sleep(1)
+            i += 1
+        await asyncio.get_running_loop().create_future()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

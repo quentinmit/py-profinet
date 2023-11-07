@@ -14,6 +14,23 @@ class Subslot:
     id: int
     submodule: Submodule
     parameters: dict[int, bytes]
+    input_data_offset: int | None = None
+    output_data_offset: int | None = None
+    # IO Provider State indicates the producer is sending valid data
+    input_iops_offset: int | None = None
+    output_iops_offset: int | None = None
+    # IO Consumer State indicates the consumer is happy with the data
+    input_iocs_offset: int | None = None
+    output_iocs_offset: int | None = None
+
+    @property
+    def output_fields(self) -> tuple[str, list[str]]:
+        format = ">"
+        output_fields = []
+        for data_item in self.submodule.output_data:
+            format += data_item.data_type.format
+            output_fields.append(data_item.name)
+        return format, output_fields
 
 @dataclass
 class Slot:
@@ -26,6 +43,7 @@ class ConfigReader:
     def __init__(self, path: str):
         self.config = yaml.safe_load(open(path))
         self.gsdml = GSDML(os.path.join(os.path.dirname(path), self.config["gsdml"]))
+        self._calculate_slots()
 
     def _parse_parameters(self, submodule: Submodule, parameters: dict[str, str|int|bool]) -> dict[int, bytes]:
         out = {}
@@ -56,9 +74,19 @@ class ConfigReader:
             out[parameter.index] = parameter_bytes
         return out
 
-    @property
-    def slots(self) -> list[Slot]:
+    def _calculate_slots(self) -> list[Slot]:
         out = []
+        input_frame_offset = output_frame_offset = 0
+        def input(n = 1):
+            nonlocal input_frame_offset
+            out = input_frame_offset
+            input_frame_offset += n
+            return out
+        def output(n = 1):
+            nonlocal output_frame_offset
+            out = output_frame_offset
+            output_frame_offset += n
+            return out
         for slot, module in sorted(self.config["slots"].items()):
             g_module = self.gsdml.get_module(module["id"])
             if not g_module:
@@ -78,20 +106,30 @@ class ConfigReader:
                 g_submodule = g_module.get_submodule(submodule["id"])
                 if not g_submodule:
                     raise ValueError("Couldn't find submodule 0x%04x" % (submodule["id"]))
-                s.subslots.append(Subslot(
+                subslot = Subslot(
                     slot=slot,
                     subslot=subslot,
                     id=submodule["id"],
                     submodule=g_submodule,
                     parameters=self._parse_parameters(g_submodule, submodule.get("parameters", {})),
-                ))
+                )
+                has_input = subslot.submodule.input_data or not subslot.submodule.output_data
+                if has_input:
+                    subslot.input_data_offset = input(subslot.submodule.input_length)
+                    subslot.input_iops_offset = input()
+                    subslot.output_iocs_offset = output()
+                if subslot.submodule.output_data:
+                    subslot.output_data_offset = output(subslot.submodule.output_length)
+                    subslot.output_iops_offset = output()
+                    subslot.input_iocs_offset = input()
+                s.subslots.append(subslot)
             out.append(s)
-        return out
+        self.slots = out
+        self.input_frame_size = max(40, input_frame_offset)
+        self.output_frame_size = max(40, output_frame_offset)
 
     @property
     def connect_blocks(self):
-        input_frame_offset = output_frame_offset = 0
-
         input_api_objects = []
         input_iocs_objects = []
         output_api_objects = []
@@ -101,35 +139,32 @@ class ConfigReader:
         for slot in self.slots:
             expected_submodules = []
             for subslot in slot.subslots:
-                has_input = subslot.submodule.input_data or not subslot.submodule.output_data
-                if has_input:
+                if subslot.input_data_offset is not None:
                     input_api_objects.append(IOCRAPIObject(
                         SlotNumber=subslot.slot,
                         SubslotNumber=subslot.subslot,
-                        FrameOffset=input_frame_offset,
+                        FrameOffset=subslot.input_data_offset,
                     ))
-                    input_frame_offset += subslot.submodule.input_length + 1
+                if subslot.output_iocs_offset is not None:
                     output_iocs_objects.append(IOCRAPIObject(
                         SlotNumber=subslot.slot,
                         SubslotNumber=subslot.subslot,
-                        FrameOffset=output_frame_offset,
+                        FrameOffset=subslot.output_iocs_offset,
                     ))
-                    output_frame_offset += 1
-                if subslot.submodule.output_data:
+                if subslot.output_data_offset is not None:
                     output_api_objects.append(IOCRAPIObject(
                         SlotNumber=subslot.slot,
                         SubslotNumber=subslot.subslot,
-                        FrameOffset=output_frame_offset,
+                        FrameOffset=subslot.output_data_offset,
                     ))
-                    output_frame_offset += subslot.submodule.output_length + 1
+                if subslot.input_iocs_offset is not None:
                     input_iocs_objects.append(IOCRAPIObject(
                         SlotNumber=subslot.slot,
                         SubslotNumber=subslot.subslot,
-                        FrameOffset=input_frame_offset,
+                        FrameOffset=subslot.input_iocs_offset,
                     ))
-                    input_frame_offset += 1
                 data_description = []
-                if has_input:
+                if subslot.input_data_offset is not None:
                     data_description.append(
                         ExpectedSubmoduleDataDescription(
                             DataDescription="Input",
@@ -138,7 +173,7 @@ class ConfigReader:
                             SubmoduleDataLength=subslot.submodule.input_length,
                         )
                     )
-                if subslot.submodule.output_length:
+                if subslot.output_data_offset is not None:
                     data_description.append(
                         ExpectedSubmoduleDataDescription(
                             DataDescription="Output",
@@ -167,7 +202,7 @@ class ConfigReader:
                 ReductionRatio=512, # FIXME
                 WatchdogFactor=3, # FIXME
                 DataHoldFactor=3, # FIXME
-                DataLength=max(input_frame_offset, 40),
+                DataLength=self.input_frame_size,
                 FrameID=0x8001,
                 IOCRReference=0x0001,
                 APIs=[
@@ -183,7 +218,7 @@ class ConfigReader:
                 ReductionRatio=512, # FIXME
                 WatchdogFactor=3, # FIXME
                 DataHoldFactor=3, # FIXME
-                DataLength=max(output_frame_offset, 40),
+                DataLength=self.output_frame_size,
                 FrameID=0x8002,
                 IOCRReference=0x0002,
                 APIs=[
@@ -210,7 +245,7 @@ class ConfigReader:
                     yield (slot.slot, subslot.subslot, index, value)
 
     @property
-    def input_struct(self):
+    def input_struct(self) -> tuple[str, tuple[int, int, str]]:
         format = ">"
         input_fields = []
         for slot in self.slots:

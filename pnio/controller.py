@@ -49,7 +49,7 @@ class ProfinetDevice:
         self.mac = mac
         self.slots = {}
 
-    async def _cyclic_data_task(self, cr: IOCRBlockReq):
+    async def _cyclic_data_task(self, config: ConfigReader, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
         LOGGER.debug("Starting cyclic data for output frame 0x%04x every 0x%04x cycles", cr.FrameID, cycle_interval)
         while True:
@@ -57,7 +57,29 @@ class ProfinetDevice:
             next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
             LOGGER.debug("Current cycle counter %d, next cycle counter %d", now, next_cycle_count)
             await asyncio.sleep((next_cycle_count - now) / 32000)
-            data = bytearray(40) # TODO
+            data = bytearray(config.output_frame_size)
+            for slot in config.slots:
+                for subslot in slot.subslots:
+                    if subslot.output_data_offset is None:
+                        continue
+                    format, field_names = subslot.output_fields
+                    try:
+                        struct.pack_into(
+                            format,
+                            data,
+                            subslot.output_data_offset,
+                            *[self.slots[subslot.slot].subslots[subslot.subslot].output_data[name] for name in field_names]
+                        )
+                    except struct.error:
+                        LOGGER.warn("Output data not ready yet")
+                    else:
+                        struct.pack_into(
+                            ">B",
+                            data,
+                            subslot.output_iops_offset,
+                            0x80, # TODO: Use PNIORealTime_IOxS
+                        )
+
             await self.rt.send_cyclic_data_frame(
                 data=data,
                 frame_id=cr.FrameID,
@@ -146,7 +168,7 @@ class ProfinetInterface:
                 for block in connect_blocks:
                     if isinstance(block, IOCRBlockReq) and block.IOCRType == 2: # output
                         LOGGER.info("Starting cyclic data task for %s", block.show2(dump=True))
-                        tg.create_task(device._cyclic_data_task(block))
+                        tg.create_task(device._cyclic_data_task(config, block))
                 # TODO: Use IODWriteMultipleReq?
                 for slot, subslot, index, value in config.parameter_values:
                     await device.assoc.write(data=value, slot=slot, subslot=subslot, index=index)
