@@ -1,11 +1,25 @@
 import logging
 import asyncio
 import argparse
+import json
 
 from scapy.config import conf
+import asyncio_mqtt as aiomqtt
 
 from pnio.config import ConfigReader
-from pnio.controller import ProfinetInterface
+from pnio.controller import ProfinetInterface, Slot
+
+def _to_json(slots: dict[int, Slot]) -> any:
+    return {
+        i: {
+            j: {
+                k: v for k,v in subslot.input_data.items()
+            } | {
+                "IOPS": bytes(subslot.input_iops)[0],
+            }
+            for j, subslot in slot.subslots.items()
+        } for i, slot in slots.items()
+    }
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -24,19 +38,10 @@ async def main():
     interface = await ProfinetInterface.from_config(config)
 
     async with interface.open_device_from_config(config) as device:
-        i = 0
-        while True:
-            j = 0
-            for index, slot in device.slots.items():
-                if index == 0:
-                    continue
-                for subslot in slot.subslots.values():
-                    for k in subslot.output_data:
-                        subslot.output_data[k] = 0x80 | (1 if (i & (1 << j)) else 0)
-                        j += 1
-            await asyncio.sleep(1)
-            i += 1
-        await asyncio.get_running_loop().create_future()
+        async with aiomqtt.Client(config.config["mqtt_server"]) as mqtt_client:
+            async for slots in device.updates:
+                data = _to_json(slots)
+                await mqtt_client.publish("workshop/power/status", payload=json.dumps(data))
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

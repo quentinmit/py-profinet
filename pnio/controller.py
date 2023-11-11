@@ -42,12 +42,14 @@ class ProfinetDevice:
     assoc: Association
     mac: str | bytes
     slots: dict[int, Slot]
+    _listeners: set[asyncio.Event]
 
     def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
         self.rt = rt
         self.assoc = assoc
         self.mac = mac
         self.slots = {}
+        self._listeners = set()
 
     async def _cyclic_data_task(self, config: ConfigReader, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
@@ -116,10 +118,27 @@ class ProfinetDevice:
                     subslot.input_iops = PNIORealTime_IOxS(bytes([value]))
                 elif name == "IOCS":
                     subslot.output_iocs = PNIORealTime_IOxS(bytes([value]))
-                elif subslot.input_iops.dataState == 1: # IOPS
+                else: #elif subslot.input_iops.dataState == 1:
                     subslot.input_data[name] = value
             LOGGER.info("Input frame: %r", self.slots)
+            self._signal_update()
         self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
+
+    def _signal_update(self):
+        for l in self._listeners:
+            l.set()
+
+    @property
+    async def updates(self):
+        e = asyncio.Event()
+        self._listeners.add(e)
+        try:
+            while True:
+                await e.wait()
+                e.clear()
+                yield self.slots
+        finally:
+            self._listeners.remove(e)
 
 
 class ProfinetInterface:
