@@ -118,8 +118,10 @@ class ProfinetDevice:
                     subslot.input_iops = PNIORealTime_IOxS(bytes([value]))
                 elif name == "IOCS":
                     subslot.output_iocs = PNIORealTime_IOxS(bytes([value]))
-                else: #elif subslot.input_iops.dataState == 1:
+                elif subslot.input_iops.dataState == 1:
                     subslot.input_data[name] = value
+                else:
+                    subslot.input_data[name] = None
             LOGGER.info("Input frame: %r", self.slots)
             self._signal_update()
         self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
