@@ -13,7 +13,7 @@ from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.l2 import Ether
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
+from .pnio_rpc import RPC_INTERFACE_UUID, Alarm_High, Alarm_Low, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.interfaces import resolve_iface
 from scapy.config import conf
 from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
@@ -43,10 +43,15 @@ class RTProtocol(DatagramProtocol):
     src_mac: bytes
     pending_requests: dict[tuple[str, int], Queue]
     frame_handlers: dict[int, Callable[[ProfinetIO], None]]
+    alarm_handlers: dict[tuple[int, int], Callable[[ProfinetIO], None]]
 
     def __init__(self):
         self.pending_requests = {}
-        self.frame_handlers = {}
+        self.frame_handlers = {
+            0xFC01: self._handle_alarm, # Alarm High
+            0xFE01: self._handle_alarm, # Alarm Low
+        }
+        self.alarm_handlers = {}
 
     def connection_made(self, transport: DatagramTransport) -> None:
         self.transport = transport
@@ -137,17 +142,32 @@ class RTProtocol(DatagramProtocol):
     def register_frame_handler(self, frame_id: int, handler: Callable[[ProfinetIO], None]):
         self.frame_handlers[frame_id] = handler
 
-    async def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
+    def register_alarm_handler(self, src_endpoint: int, dst_endpoint: int, handler: Callable[[ProfinetIO], None]):
+        self.alarm_handlers[(src_endpoint, dst_endpoint)] = handler
+
+    def _handle_alarm(self, pkt: ProfinetIO):
+        endpoints = (pkt.AlarmSrcEndpoint, pkt.AlarmDstEndpoint)
+        if handler := self.alarm_handlers.get(endpoints):
+            handler(pkt)
+
+    def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
         if cycle_counter is None:
             # Unit is steps of 31.25 µs
             cycle_counter = int(time.time() * 32000)
+        self.send_frame(
+            PNIORealTimeCyclicPDU(
+                cycleCounter=cycle_counter & 0xFFFF,
+                data=[data],
+            ),
+            frame_id=frame_id,
+            dst_mac=dst_mac,
+        )
+
+    def send_frame(self, data: bytes | Packet, frame_id: int, dst_mac: str | bytes):
         pkt = (
             Ether(dst=dst_mac, src=self.src_mac, type=ETHERTYPE_PROFINET)
             / ProfinetIO(frameID=frame_id)
-            / PNIORealTimeCyclicPDU(
-                cycleCounter=cycle_counter & 0xFFFF,
-                data=[data],
-            )
+            / data
         )
         self.send(pkt)
 

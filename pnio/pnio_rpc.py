@@ -1562,36 +1562,42 @@ PDU_TYPE_VERSION = {
 PDU_TYPE_VERSION.update({i: "Reserved" for i in range(0x03, 0x10)})
 
 
-class PNIORealTimeAcyclicPDUHeader(Packet):
+class PNIORealTimeAcyclicPDU(Packet):
     fields_desc = [
         # IEC-61158-6-10:2021, Table 241
         ShortField("AlarmDstEndpoint", 0),
         ShortField("AlarmSrcEndpoint", 0),
-        BitEnumField("PDUTypeType", 0, 4, PDU_TYPE_TYPE),
         BitEnumField("PDUTypeVersion", 0, 4, PDU_TYPE_VERSION),
+        BitEnumField("PDUTypeType", 0, 4, PDU_TYPE_TYPE),
         BitField("AddFlags", 0, 8),
         XShortField("SendSeqNum", 0),
         XShortField("AckSeqNum", 0),
-        XShortField("VarPartLen", 0),
+        LenField("VarPartLen", 0, fmt="H"),
     ]
 
     def __new__(cls, name, bases, dct):
         raise NotImplementedError()
 
-
 class Alarm_Low(Packet):
     fields_desc = [
-        PNIORealTimeAcyclicPDUHeader,
-        PacketField("RTA_SDU", None, AlarmNotification_Low),
+        PNIORealTimeAcyclicPDU,
     ]
 
 
 class Alarm_High(Packet):
     fields_desc = [
-        PNIORealTimeAcyclicPDUHeader,
-        PacketField("RTA_SDU", None, AlarmNotification_High),
+        PNIORealTimeAcyclicPDU,
     ]
 
+class PNIOStatus(Packet):
+    fields_desc = [
+        XIntField("PNIOStatus", 0),
+    ]
+
+bind_layers(Alarm_Low, AlarmNotification_Low, PDUTypeType=1)
+bind_layers(Alarm_High, AlarmNotification_High, PDUTypeType=1)
+bind_layers(Alarm_Low, PNIOStatus, PDUTypeType=4)
+bind_layers(Alarm_High, PNIOStatus, PDUTypeType=4)
 
 # PROFINET IO DCE/RPC PDU
 PNIO_RPC_BLOCK_ASSOCIATION = {

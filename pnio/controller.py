@@ -11,7 +11,7 @@ from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
 from .rt import RTProtocol, create_rt_endpoint
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
-from .pnio_rpc import IOCRBlockReq
+from .pnio_rpc import Alarm_High, Alarm_Low, IOCRBlockReq
 
 from scapy.layers.l2 import Ether
 from scapy.utils import hexdump
@@ -43,6 +43,8 @@ class ProfinetDevice:
     mac: str | bytes
     slots: dict[int, Slot]
     _listeners: set[asyncio.Event]
+    send_seq_num: int|None
+    ack_seq_num: int|None
 
     def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
         self.rt = rt
@@ -50,6 +52,7 @@ class ProfinetDevice:
         self.mac = mac
         self.slots = {}
         self._listeners = set()
+        self.send_seq_num = self.ack_seq_num = None
 
     async def _cyclic_data_task(self, config: ConfigReader, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
@@ -83,14 +86,38 @@ class ProfinetDevice:
                         )
 
             LOGGER.debug("Output\n%s", hexdump(data, dump=1))
-            await self.rt.send_cyclic_data_frame(
+            self.rt.send_cyclic_data_frame(
                 data=data,
                 frame_id=cr.FrameID,
                 dst_mac=self.mac,
                 cycle_counter=next_cycle_count,
             )
 
+
+    def _handle_alarm(self, pkt: ProfinetIO):
+        logger.warning("Got alarm:\n%s", pkt.show(dump=True))
+        send_seq_num = self.send_seq_num
+        if send_seq_num is None:
+            send_seq_num = 0xFFFE
+        self.ack_seq_num = pkt.SendSeqNum
+        self.rt.send_frame(
+            frame_id=pkt.frameID,
+            data=Alarm_Low(
+                AlarmDstEndpoint=pkt.AlarmSrcEndpoint,
+                AlarmSrcEndpoint=pkt.AlarmDstEndpoint,
+                PDUTypeType="RTA_TYPE_ACK",
+                AckSeqNum=self.ack_seq_num,
+                SendSeqNum=send_seq_num,
+            ),
+            dst_mac=self.mac,
+        )
+
     def _register_frames(self, config: ConfigReader):
+        self.rt.register_alarm_handler(
+            src_endpoint=self.assoc.remote_alarm_reference,
+            dst_endpoint=self.assoc.local_alarm_reference,
+            handler=self._handle_alarm,
+        )
         input_format, input_fields = config.input_struct
         for slot in config.slots:
             out_subslots = {}
@@ -146,6 +173,7 @@ class ProfinetDevice:
 class ProfinetInterface:
     rt: RTProtocol
     rpc: DceRpcProtocol
+    alarm_reference: int
 
     @classmethod
     async def from_config(cls, config: ConfigReader):
@@ -154,6 +182,7 @@ class ProfinetInterface:
     def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol):
         self.rt = rt
         self.rpc = rpc
+        self.alarm_reference = 1
 
     @asynccontextmanager
     async def open_device(self, name_of_station: str, extra_blocks=[]) -> AsyncGenerator[ProfinetDevice, None]:
@@ -172,8 +201,11 @@ class ProfinetInterface:
             device_id=pkt[DeviceIDBlock].device_id,
             instance=instance,
         )
+        alarm_reference = self.alarm_reference
+        self.alarm_reference += 1
         async with cmrpc.connect(
                 cm_mac_addr=self.rt.src_mac,
+                alarm_reference=alarm_reference,
                 extra_blocks=extra_blocks,
         ) as assoc:
             yield ProfinetDevice(mac=mac, rt=self.rt, assoc=assoc)

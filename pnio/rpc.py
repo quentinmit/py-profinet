@@ -11,7 +11,7 @@ from typing import Any, Optional, Tuple
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
+from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, AlarmCRBlockRes, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.config import conf
 
 LOGGER = logging.getLogger("profinet.rpc")
@@ -348,13 +348,17 @@ def create_pn_uuid(vendor_id, device_id, instance=0):
     ))
 
 class Association:
+    _connect_res: list[Packet]
+
     def __init__(self, activity):
         self.activity = activity
         self.session_key = activity.session_key
         activity.session_key += 1
         self.aruuid = uuid.uuid4()
+        self._connect_req = []
+        self._connect_res = []
 
-    async def _connect(self, cm_mac_addr, easy_supervisor=False, extra_blocks=[]):
+    async def _connect(self, cm_mac_addr, easy_supervisor=False, alarm_reference=1, extra_blocks=[]):
         ar_block_req = ARBlockReq(
             ARUUID=self.aruuid,
             SessionKey=self.session_key, # The value of the field SessionKey shall be increased by one for each connect by the CMInitiator.
@@ -371,14 +375,18 @@ class Association:
         blocks = [ar_block_req]
         if not easy_supervisor:
             # TODO: Configure alarm block?
-            alarm_block_req = AlarmCRBlockReq()
+            alarm_block_req = AlarmCRBlockReq(
+                LocalAlarmReference=alarm_reference,
+            )
             blocks.append(alarm_block_req)
         blocks.extend(extra_blocks)
+        self._connect_req = blocks
         res = await self.activity.rpc(
             opnum=RPC_IO_OPNUM.Connect,
             blocks=blocks,
         )
         # Success!
+        self._connect_res = res
         return res
 
     async def _release(self):
@@ -403,6 +411,18 @@ class Association:
             ControlCommand_PrmEnd=0x0001,
         )
         return await self.activity.rpc(opnum=RPC_IO_OPNUM.Control, blocks=[req])
+
+    @property
+    def local_alarm_reference(self) -> int|None:
+        for block in self._connect_req:
+            if isinstance(block, AlarmCRBlockReq):
+                return block.LocalAlarmReference
+
+    @property
+    def remote_alarm_reference(self) -> int|None:
+        for block in self._connect_res:
+            if isinstance(block, AlarmCRBlockRes):
+                return block.LocalAlarmReference
 
 class ContextManagerActivity(PnioRpcActivity):
     def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
