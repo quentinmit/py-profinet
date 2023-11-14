@@ -95,7 +95,7 @@ class ProfinetDevice:
 
 
     def _handle_alarm(self, pkt: ProfinetIO):
-        logger.warning("Got alarm:\n%s", pkt.show(dump=True))
+        LOGGER.warn("Got alarm:\n%s", pkt.show(dump=True))
         send_seq_num = self.send_seq_num
         if send_seq_num is None:
             send_seq_num = 0xFFFE
@@ -149,7 +149,7 @@ class ProfinetDevice:
                     subslot.input_data[name] = value
                 else:
                     subslot.input_data[name] = None
-            LOGGER.info("Input frame: %r", self.slots)
+            LOGGER.debug("Input frame: %r", self.slots)
             self._signal_update()
         self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
 
