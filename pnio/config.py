@@ -260,3 +260,10 @@ class ConfigReader:
                     format += "B"
                     input_fields.append((subslot.slot, subslot.subslot, "IOCS"))
         return format, input_fields
+
+    @property
+    def mqtt_server(self) -> str|None:
+        return self.config.get("mqtt", {}).get("server")
+
+    def mqtt_topic(self, type: str) -> str:
+        return "%s/%s" % (self.config["mqtt"]["topic_prefix"], type)

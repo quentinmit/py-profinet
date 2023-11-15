@@ -94,6 +94,8 @@ class GSDML:
     dap: Element
     vendor_id: int
     device_id: int
+    vendor_name: str
+    device_info: str
     modules: list[Module]
     text: dict[str, str]
     value_list: dict[str, dict[str, int]]
@@ -106,11 +108,15 @@ class GSDML:
         self.vendor_id = int(dev_identity.get("VendorID"), 0)
         self.device_id = int(dev_identity.get("DeviceID"), 0)
 
+        self.vendor_name = dev_identity.find("./VendorName", NS).get("Value")
+
         self.dap = self.doc.find(".//DeviceAccessPointItem", NS)
 
         self.text = {}
         for el in self.doc.findall(".//ExternalTextList/PrimaryLanguage/Text", NS):
             self.text[el.get("TextId")] = el.get("Value")
+
+        self.device_info = self.text[dev_identity.find("./InfoText", NS).get("TextId")]
 
         self.value_list = {}
         for value_item in self.doc.findall(".//ValueList/ValueItem", NS):
