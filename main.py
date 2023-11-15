@@ -4,7 +4,7 @@ import argparse
 import json
 
 from scapy.config import conf
-import asyncio_mqtt as aiomqtt
+import aiomqtt
 
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
@@ -35,7 +35,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
     input_topic = config.mqtt_topic("inputs")
     output_topic = config.mqtt_topic("outputs")
     device_name = config.config["mqtt"]["device"]["name"]
-    device = {
+    ha_device = {
         "connections": [
             ["mac", device.mac],
         ],
@@ -45,35 +45,39 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
     }
     out = {}
     if caparoc := config.config.get("caparoc"):
-        avail = lambda vj_expr: ([
+        avail = (lambda vj_expr: [{
             "topic": input_topic,
-            "value_template": "{%% if %s is None %%}offline{%% else %%}online{%% endif %%}" % (vj_expr),
-        ])
+            "value_template": "{%% if %s is none %%}offline{%% else %%}online{%% endif %%}" % (vj_expr),
+        }])
         total_current = 'value_json["0"]["2"]["Total system current"]'
         out[("sensor", "total_current")] = {
             "availability": avail(total_current),
-            "device": device,
+            "device": ha_device,
             "device_class": "current",
             "state_class": "measurement",
             "name": "Total system current",
+            "unique_id": "%s_total_current" % (device_name,),
             "state_topic": input_topic,
             "value_template": "{{ %s * 0.1 }}" % (total_current,),
             "unit_of_measurement": "A",
+            "suggested_display_precision": 1,
         }
         input_voltage = 'value_json["0"]["2"]["System input voltage"]'
         out[("sensor", "input_voltage")] = {
             "availability": avail(input_voltage),
-            "device": device,
+            "device": ha_device,
             "device_class": "voltage",
             "state_class": "measurement",
             "name": "System input voltage",
+            "unique_id": "%s_input_voltage" % (device_name,),
             "state_topic": input_topic,
             "value_template": "{{ %s * 0.01 }}" % (input_voltage,),
             "unit_of_measurement": "V",
+            "suggested_display_precision": 2,
         }
         # TODO: Expose binary sensors for undervoltage, overvoltage, channel error, warning, total current shutdown
         actual_channels = sorted([
-            (i, j, int(name.split()[3]))
+            (i, j, int(name.split()[2]))
             for i, slot in device.slots.items()
             for j, subslot in slot.subslots.items()
             for name in subslot.output_data
@@ -87,7 +91,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
             out[("switch", unique_id)] = {
                 "availability": availability,
                 "command_topic": output_topic,
-                "device": device,
+                "device": ha_device,
                 #"entity_category": "config",
                 "payload_on": """{"%d": {"%d": {"Control channel %d": 129}}}""" % (slot, subslot, channel_number),
                 "payload_off": """{"%d": {"%d": {"Control channel %d": 128}}}""" % (slot, subslot, channel_number),
@@ -98,27 +102,31 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
                 "state_topic": input_topic,
                 "state_on": "True",
                 "state_off": "False",
-                "value_template": "{{ %s & 1 != 0 }}" % (status_info,)
+                "value_template": "{{ %s %% 2 != 0 }}" % (status_info,)
             }
             out[("sensor", "%s_nominal_current" % (unique_id,))] = {
                 "availability": availability,
-                "device": device,
+                "device": ha_device,
                 "device_class": "current",
                 "entity_category": "diagnostic",
                 "name": "%s nominal current" % (channel_name,),
+                "unique_id": "%s_%s_nominal_current" % (device_name, unique_id),
                 "state_topic": input_topic,
                 "value_template": "{{ %s }}" % (vj("Channel %s nominal current"),),
                 "unit_of_measurement": "A",
+                "suggested_display_precision": 0,
             }
             out[("sensor", "%s_load_current" % (unique_id,))] = {
                 "availability": availability,
-                "device": device,
+                "device": ha_device,
                 "device_class": "current",
                 "state_class": "measurement",
                 "name": "%s load current" % (channel_name,),
+                "unique_id": "%s_%s_load_current" % (device_name, unique_id),
                 "state_topic": input_topic,
                 "value_template": "{{ %s * 0.1 }}" % (vj("Channel %s load current"),),
                 "unit_of_measurement": "A",
+                "suggested_display_precision": 1,
             }
             # TODO: Binary sensors for overload, short circuit, defect?
     return out
@@ -140,7 +148,7 @@ async def main():
     interface = await ProfinetInterface.from_config(config)
 
     async with interface.open_device_from_config(config) as device:
-        async with aiomqtt.Client(config.config["mqtt_server"]) as mqtt_client:
+        async with aiomqtt.Client(config.mqtt_server) as mqtt_client:
             async def mqtt2pnio():
                 async with mqtt_client.messages() as messages:
                     await mqtt_client.subscribe("homeassistant/status")
@@ -148,9 +156,10 @@ async def main():
                     await mqtt_client.subscribe("workshop/power/inputs")
                     outputs_seen = False
                     async for message in messages:
-                        if message.topic.matches("homeassistant/status") and message.payload == "online":
+                        if message.topic.matches("homeassistant/status") and message.payload == b"online":
+                            logging.info("Received Home Assistant birth message; sending discovery messages")
                             # Home Assistant is (newly?) online, send discovery messages
-                            for (domain, name), payload in get_discovery_messages(config, device):
+                            for (domain, name), payload in get_discovery_messages(config, device).items():
                                 await mqtt_client.publish(
                                     "homeassistant/%s/%s/%s/config" % (
                                         domain,
