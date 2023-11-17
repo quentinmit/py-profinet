@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 import asyncio
 from dataclasses import dataclass, field
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 import struct
+from typing import Optional
+import uuid
 
 from .pnio import PNIORealTime_IOxS, PNIORealTimeCyclicDefaultRawData, ProfinetIO
 
@@ -39,22 +41,151 @@ class Slot:
 
 class ProfinetDevice:
     rt: RTProtocol
-    assoc: Association
-    mac: str | bytes
+    rpc: DceRpcProtocol
+    name_of_station: str
+    alarm_reference: int
+
+    aruuid: uuid.UUID
+    session_key: int
     slots: dict[int, Slot]
+    connected: asyncio.Event
     _listeners: set[asyncio.Event]
+
+    mac: Optional[str | bytes]
     send_seq_num: int|None
     ack_seq_num: int|None
 
-    def __init__(self, rt: RTProtocol, assoc: Association, mac: str | bytes):
+    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, name_of_station: str, alarm_reference: int):
         self.rt = rt
-        self.assoc = assoc
-        self.mac = mac
+        self.rpc = rpc
+        self.name_of_station = name_of_station
+        self.alarm_reference = alarm_reference
+
+        self.aruuid = uuid.uuid4()
+        self.session_key = 1
         self.slots = {}
         self._listeners = set()
+
+        self.mac = None
         self.send_seq_num = self.ack_seq_num = None
 
-    async def _cyclic_data_task(self, config: ConfigReader, cr: IOCRBlockReq):
+    @asynccontextmanager
+    async def _connect(self, extra_blocks=[]):
+        # Locate device with DCP
+        pkt = await self.rt.dcp_identify(self.name_of_station)
+        mac = pkt[Ether].src
+        # TODO: Set the IP if it's not already set correctly.
+        #if ipb := pkt.getlayer(IPParameterBlock):
+        #    if not (ipb.ip == ip and ipb.netmask == netmask and ipb.gateway == gateway):
+        #        await rt.dcp_set_ip(mac, ip, netmask, gateway)
+        ib = pkt[DeviceInstanceBlock]
+        instance = (ib.device_instance_high << 8) | ib.device_instance_low
+        cmrpc = ContextManagerActivity(
+            protocol=self.rpc,
+            dst_host=pkt[IPParameterBlock].ip,
+            vendor_id=pkt[DeviceIDBlock].vendor_id,
+            device_id=pkt[DeviceIDBlock].device_id,
+            instance=instance,
+        )
+        session_key = self.session_key
+        self.session_key += 1
+        async with cmrpc.connect(
+                aruuid=self.aruuid,
+                session_key=session_key,
+                cm_mac_addr=self.rt.src_mac,
+                alarm_reference=self.alarm_reference,
+                extra_blocks=extra_blocks,
+        ) as assoc:
+            self.mac = mac
+            self.send_seq_num = self.ack_seq_num = None
+            yield assoc
+
+    async def _reconnect_task(self):
+        while True:
+            async with self._connect() as assoc:
+                self.connected.set()
+                disconnect_fut = asyncio.get_running_loop().create_future()
+                try:
+                    # TODO: Watchdog task
+                    await disconnect_fut
+                finally:
+                    self.connected.clear()
+
+    def _handle_alarm(self, pkt: ProfinetIO):
+        LOGGER.warn("Got alarm:\n%s", pkt.show(dump=True))
+        send_seq_num = self.send_seq_num
+        if send_seq_num is None:
+            send_seq_num = 0xFFFE
+        self.ack_seq_num = pkt.SendSeqNum
+        self.rt.send_frame(
+            frame_id=pkt.frameID,
+            data=Alarm_Low(
+                AlarmDstEndpoint=pkt.AlarmSrcEndpoint,
+                AlarmSrcEndpoint=pkt.AlarmDstEndpoint,
+                PDUTypeType="RTA_TYPE_ACK",
+                AckSeqNum=self.ack_seq_num,
+                SendSeqNum=send_seq_num,
+            ),
+            dst_mac=self.mac,
+        )
+
+    def _signal_update(self):
+        for l in self._listeners:
+            l.set()
+
+    @property
+    async def updates(self):
+        e = asyncio.Event()
+        self._listeners.add(e)
+        try:
+            while True:
+                await e.wait()
+                e.clear()
+                yield self.slots
+        finally:
+            self._listeners.remove(e)
+
+
+class ProfinetDeviceConfig(ProfinetDevice):
+    config: ConfigReader
+
+    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, config: ConfigReader, alarm_reference: int):
+        super().__init__(
+            rt=rt,
+            rpc=rpc,
+            name_of_station=config.config["name_of_station"],
+            alarm_reference=alarm_reference,
+        )
+        self.config = config
+        for slot in self.config.slots:
+            out_subslots = {}
+            for subslot in slot.subslots:
+                out_subslots[subslot.subslot] = Subslot(
+                    input_data={
+                        data_item.name: None
+                        for data_item in subslot.submodule.input_data
+                    },
+                    output_data={
+                        data_item.name: None
+                        for data_item in subslot.submodule.output_data
+                    },
+                )
+            self.slots[slot.slot] = Slot(
+                subslots=out_subslots,
+            )
+
+    @asynccontextmanager
+    async def _connect(self) -> AsyncGenerator[Association, None]:
+        async with super()._connect(extra_blocks=self.config.connect_blocks) as assoc:
+            self._register_frames(assoc)
+            # TODO: Use IODWriteMultipleReq?
+            for slot, subslot, index, value in self.config.parameter_values:
+                await assoc.write(data=value, slot=slot, subslot=subslot, index=index)
+            await assoc.parameter_end()
+            # TODO: Await ApplicationReady
+            yield assoc
+
+    async def _cyclic_data_task(self, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
         LOGGER.debug("Starting cyclic data for output frame 0x%04x every 0x%04x cycles", cr.FrameID, cycle_interval)
         while True:
@@ -62,8 +193,8 @@ class ProfinetDevice:
             next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
             LOGGER.debug("Current cycle counter %d, next cycle counter %d", now, next_cycle_count)
             await asyncio.sleep((next_cycle_count - now) / 32000)
-            data = bytearray(config.output_frame_size)
-            for slot in config.slots:
+            data = bytearray(self.config.output_frame_size)
+            for slot in self.config.slots:
                 for subslot in slot.subslots:
                     if subslot.output_data_offset is None:
                         continue
@@ -86,55 +217,21 @@ class ProfinetDevice:
                         )
 
             LOGGER.debug("Output\n%s", hexdump(data, dump=1))
-            self.rt.send_cyclic_data_frame(
-                data=data,
-                frame_id=cr.FrameID,
-                dst_mac=self.mac,
-                cycle_counter=next_cycle_count,
-            )
+            if self.mac:
+                self.rt.send_cyclic_data_frame(
+                    data=data,
+                    frame_id=cr.FrameID,
+                    dst_mac=self.mac,
+                    cycle_counter=next_cycle_count,
+                )
 
-
-    def _handle_alarm(self, pkt: ProfinetIO):
-        LOGGER.warn("Got alarm:\n%s", pkt.show(dump=True))
-        send_seq_num = self.send_seq_num
-        if send_seq_num is None:
-            send_seq_num = 0xFFFE
-        self.ack_seq_num = pkt.SendSeqNum
-        self.rt.send_frame(
-            frame_id=pkt.frameID,
-            data=Alarm_Low(
-                AlarmDstEndpoint=pkt.AlarmSrcEndpoint,
-                AlarmSrcEndpoint=pkt.AlarmDstEndpoint,
-                PDUTypeType="RTA_TYPE_ACK",
-                AckSeqNum=self.ack_seq_num,
-                SendSeqNum=send_seq_num,
-            ),
-            dst_mac=self.mac,
-        )
-
-    def _register_frames(self, config: ConfigReader):
+    def _register_frames(self, assoc: Association):
         self.rt.register_alarm_handler(
-            src_endpoint=self.assoc.remote_alarm_reference,
-            dst_endpoint=self.assoc.local_alarm_reference,
+            src_endpoint=assoc.remote_alarm_reference,
+            dst_endpoint=assoc.local_alarm_reference,
             handler=self._handle_alarm,
         )
-        input_format, input_fields = config.input_struct
-        for slot in config.slots:
-            out_subslots = {}
-            for subslot in slot.subslots:
-                out_subslots[subslot.subslot] = Subslot(
-                    input_data={
-                        data_item.name: None
-                        for data_item in subslot.submodule.input_data
-                    },
-                    output_data={
-                        data_item.name: None
-                        for data_item in subslot.submodule.output_data
-                    },
-                )
-            self.slots[slot.slot] = Slot(
-                subslots=out_subslots,
-            )
+        input_format, input_fields = self.config.input_struct
         def _handle_input_frame(frame: ProfinetIO):
             data = frame[PNIORealTimeCyclicDefaultRawData].data
             LOGGER.debug("Input\n%s", hexdump(data, dump=1))
@@ -151,23 +248,8 @@ class ProfinetDevice:
                     subslot.input_data[name] = None
             LOGGER.debug("Input frame: %r", self.slots)
             self._signal_update()
-        self.rt.register_frame_handler(0x8001, _handle_input_frame) # TODO: Get frame ID from somewhere
-
-    def _signal_update(self):
-        for l in self._listeners:
-            l.set()
-
-    @property
-    async def updates(self):
-        e = asyncio.Event()
-        self._listeners.add(e)
-        try:
-            while True:
-                await e.wait()
-                e.clear()
-                yield self.slots
-        finally:
-            self._listeners.remove(e)
+        for frame_id in assoc.input_frame_ids:
+            self.rt.register_frame_handler(frame_id, _handle_input_frame)
 
 
 class ProfinetInterface:
@@ -186,50 +268,27 @@ class ProfinetInterface:
 
     @asynccontextmanager
     async def open_device(self, name_of_station: str, extra_blocks=[]) -> AsyncGenerator[ProfinetDevice, None]:
-        pkt = await self.rt.dcp_identify(name_of_station)
-        mac = pkt[Ether].src
-        # TODO: Set the IP if it's not already set correctly.
-        #if ipb := pkt.getlayer(IPParameterBlock):
-        #    if not (ipb.ip == ip and ipb.netmask == netmask and ipb.gateway == gateway):
-        #        await rt.dcp_set_ip(mac, ip, netmask, gateway)
-        ib = pkt[DeviceInstanceBlock]
-        instance = (ib.device_instance_high << 8) | ib.device_instance_low
-        cmrpc = ContextManagerActivity(
-            protocol=self.rpc,
-            dst_host=pkt[IPParameterBlock].ip,
-            vendor_id=pkt[DeviceIDBlock].vendor_id,
-            device_id=pkt[DeviceIDBlock].device_id,
-            instance=instance,
-        )
         alarm_reference = self.alarm_reference
         self.alarm_reference += 1
-        async with cmrpc.connect(
-                cm_mac_addr=self.rt.src_mac,
-                alarm_reference=alarm_reference,
-                extra_blocks=extra_blocks,
-        ) as assoc:
-            yield ProfinetDevice(mac=mac, rt=self.rt, assoc=assoc)
+
+        device = ProfinetDevice(rt=self.rt, rpc=self.rpc, name_of_station=name_of_station, alarm_reference=alarm_reference)
+
+        yield device
 
     @asynccontextmanager
     async def open_device_from_config(self, config: ConfigReader) -> AsyncGenerator[ProfinetDevice, None]:
-        connect_blocks = config.connect_blocks
+        alarm_reference = self.alarm_reference
+        self.alarm_reference += 1
+
+        device = ProfinetDeviceConfig(rt=self.rt, rpc=self.rpc, config=config, alarm_reference=alarm_reference)
         async with asyncio.TaskGroup() as tg:
-            async with self.open_device(
-                    name_of_station=config.config["name_of_station"],
-                    extra_blocks=connect_blocks,
-            ) as device:
-                device._register_frames(config)
-                for block in connect_blocks:
-                    if isinstance(block, IOCRBlockReq) and block.IOCRType == 2: # output
-                        LOGGER.info("Starting cyclic data task for %s", block.show2(dump=True))
-                        tg.create_task(device._cyclic_data_task(config, block))
-                # TODO: Use IODWriteMultipleReq?
-                for slot, subslot, index, value in config.parameter_values:
-                    await device.assoc.write(data=value, slot=slot, subslot=subslot, index=index)
-                await device.assoc.parameter_end()
-                # TODO: Await ApplicationReady
-                yield device
-                tg._abort()
+            for cr in config.output_crs:
+                LOGGER.info("Starting cyclic data task for %s", cr.show2(dump=True))
+                tg.create_task(device._cyclic_data_task(cr))
+            tg.create_task(device._reconnect_task())
+            await device.connected.wait()
+            yield device
+            tg._abort()
 
 
 async def create_profinet_interface(ifname: str) -> ProfinetInterface:

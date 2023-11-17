@@ -11,7 +11,7 @@ from typing import Any, Optional, Tuple
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
-from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, AlarmCRBlockRes, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
+from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, AlarmCRBlockRes, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IOCRBlockRes, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.config import conf
 
 LOGGER = logging.getLogger("profinet.rpc")
@@ -350,11 +350,15 @@ def create_pn_uuid(vendor_id, device_id, instance=0):
 class Association:
     _connect_res: list[Packet]
 
-    def __init__(self, activity):
+    def __init__(self, activity, aruuid=None, session_key=None):
         self.activity = activity
-        self.session_key = activity.session_key
-        activity.session_key += 1
-        self.aruuid = uuid.uuid4()
+        if not session_key:
+            session_key = activity.session_key
+            activity.session_key += 1
+        self.session_key = session_key
+        if not aruuid:
+            aruuid = uuid.uuid4()
+        self.aruuid = aruuid
         self._connect_req = []
         self._connect_res = []
 
@@ -424,6 +428,10 @@ class Association:
             if isinstance(block, AlarmCRBlockRes):
                 return block.LocalAlarmReference
 
+    @property
+    def input_frame_ids(self) -> list[int]:
+        return [block.FrameID for block in self._connect_res if isinstance(block, IOCRBlockRes) and block.IOCRType == 1]
+
 class ContextManagerActivity(PnioRpcActivity):
     def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
         super().__init__(protocol=protocol, dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
@@ -449,8 +457,8 @@ class ContextManagerActivity(PnioRpcActivity):
         raise NotImplementedError("unknown request")
 
     @asynccontextmanager
-    async def connect(self, **kwargs):
-        assoc = Association(self)
+    async def connect(self, aruuid=None, session_key=None, **kwargs):
+        assoc = Association(self, aruuid=aruuid, session_key=session_key)
         await assoc._connect(**kwargs)
         try:
             yield assoc

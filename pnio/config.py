@@ -237,6 +237,17 @@ class ConfigReader:
             for a in expected_submodule_api_objects
         ]
 
+    def crs(self, type: int) -> list[IOCRBlockReq]:
+        return [block for block in self.connect_blocks if isinstance(block, IOCRBlockReq) and block.IOCRType == type]
+
+    @property
+    def input_crs(self):
+        return self.crs(1)
+
+    @property
+    def output_crs(self):
+        return self.crs(2)
+
     @property
     def parameter_values(self):
         for slot in self.slots:
