@@ -33,7 +33,6 @@ def _outputs_to_json(slots: dict[int, Slot]) -> any:
 
 def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict[tuple[str, str], dict]:
     input_topic = config.mqtt_topic("inputs")
-    output_topic = config.mqtt_topic("outputs")
     device_name = config.config["mqtt"]["device"]["name"]
     ha_device = {
         "connections": [
@@ -89,8 +88,9 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
             vj = lambda tmpl: ('value_json["%d"]["%d"]["' + tmpl + '"]') % (slot, subslot, channel_number)
             status_info = vj("Channel %d status information")
             availability = avail(status_info)
-            unique_id = "%d_%d_%d" % (slot, subslot, channel_number)
-            out[("switch", unique_id)] = {
+            mqtt_key = "%d_%d_%d" % (slot, subslot, channel_number)
+            unique_id = channel_name
+            out[("switch", mqtt_key)] = {
                 "availability": availability,
                 "command_topic": config.mqtt_topic("command/%d/%d/Control channel %d" % (slot, subslot, channel_number)),
                 "device": ha_device,
@@ -105,7 +105,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
                 "state_off": "False",
                 "value_template": "{{ %s %% 2 != 0 }}" % (status_info,)
             }
-            out[("sensor", "%s_nominal_current" % (unique_id,))] = {
+            out[("sensor", f"{mqtt_key}_nominal_current")] = {
                 "availability": availability,
                 "device": ha_device,
                 "device_class": "current",
@@ -117,7 +117,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
                 "unit_of_measurement": "A",
                 "suggested_display_precision": 0,
             }
-            out[("sensor", "%s_load_current" % (unique_id,))] = {
+            out[("sensor", f"{mqtt_key}_load_current")] = {
                 "availability": availability,
                 "device": ha_device,
                 "device_class": "current",
@@ -141,7 +141,7 @@ async def main():
     if args.verbose > 1:
         conf.debug_match = args.verbose
         logging.getLogger().setLevel(logging.DEBUG)
-    if args.verbose > 2:
+    if args.verbose > 0:
         logging.getLogger().setLevel(logging.DEBUG)
 
     config = ConfigReader(args.filename)
