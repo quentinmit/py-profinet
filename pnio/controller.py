@@ -15,6 +15,7 @@ from .rt import RTProtocol, create_rt_endpoint
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
 from .pnio_rpc import Alarm_High, Alarm_Low, IOCRBlockReq
 
+from async_timeout import timeout
 from scapy.layers.l2 import Ether
 from scapy.utils import hexdump
 
@@ -104,16 +105,21 @@ class ProfinetDevice:
             self.send_seq_num = self.ack_seq_num = None
             yield assoc
 
-    async def _reconnect_task(self):
+    async def _reconnect_task(self, watchdog_time: float):
         while True:
             async with self._connect() as assoc:
                 self.connected.set()
-                disconnect_fut = asyncio.get_running_loop().create_future()
+                # TODO: Allow disconnection for other reasons
+                # disconnect_fut = asyncio.get_running_loop().create_future()
                 try:
-                    # TODO: Watchdog task
-                    await disconnect_fut
+                    async with timeout(watchdog_time) as t:
+                        async for update in self.updates:
+                            t.update(asyncio.get_running_loop().time() + watchdog_time)
+                except TimeoutError:
+                    LOGGER.error("No data received for %f s, reconnecting", watchdog_time)
                 finally:
                     self.connected.clear()
+                await asyncio.sleep(1)
 
     def _handle_alarm(self, pkt: ProfinetIO):
         LOGGER.warn("Got alarm:\n%s", pkt.show(dump=True))
@@ -289,7 +295,11 @@ class ProfinetInterface:
             for cr in config.output_crs:
                 LOGGER.info("Starting cyclic data task for %s", cr.show2(dump=True))
                 tg.create_task(device._cyclic_data_task(cr))
-            tg.create_task(device._reconnect_task())
+            watchdog_time = max(
+                cr.WatchdogFactor * cr.SendClockFactor * cr.ReductionRatio / 32000
+                for cr in config.input_crs
+            )
+            tg.create_task(device._reconnect_task(watchdog_time))
             await device.connected.wait()
             yield device
             tg._abort()
