@@ -1,6 +1,7 @@
-from asyncio import AbstractEventLoop, Future, Queue, get_running_loop, DatagramProtocol, DatagramTransport
+from asyncio import AbstractEventLoop, Future, Event, Queue, get_running_loop, DatagramProtocol, DatagramTransport
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from weakref import WeakValueDictionary
 import enum
 import logging
 import time
@@ -348,6 +349,10 @@ def create_pn_uuid(vendor_id, device_id, instance=0):
     ))
 
 class Association:
+    aruuid: uuid.UUID
+    session_key: int
+    application_ready: Event
+    _connect_req: list[Packet]
     _connect_res: list[Packet]
 
     def __init__(self, activity, aruuid=None, session_key=None):
@@ -359,6 +364,7 @@ class Association:
         if not aruuid:
             aruuid = uuid.uuid4()
         self.aruuid = aruuid
+        self.application_ready = Event()
         self._connect_req = []
         self._connect_res = []
 
@@ -435,9 +441,9 @@ class Association:
 class ContextManagerActivity(PnioRpcActivity):
     def __init__(self, protocol, dst_host, vendor_id, device_id, instance=1):
         super().__init__(protocol=protocol, dst_host=dst_host, vendor_id=vendor_id, device_id=device_id, instance=instance)
-        self.aruuid = 0
         self.session_key = 1
         self.cm_object_uuid = create_pn_uuid(vendor_id=0xf000, device_id=0, instance=protocol.instance)
+        self.associations = WeakValueDictionary()
         protocol.instance += 1
         protocol.register_handler(object=self.cm_object_uuid, interface=RPC_INTERFACE_UUID["UUID_IO_ControllerInterface"], handler=self._handle_request)
 
@@ -445,6 +451,10 @@ class ContextManagerActivity(PnioRpcActivity):
         if isinstance(pkt.payload, PNIOServiceReqPDU):
             req = pkt.payload.blocks[0]
             if isinstance(req, IODControlReq) and req.ControlCommand_ApplicationReady:
+                if assoc := self.associations.get((req.ARUUID, req.SessionKey)):
+                    if assoc.application_ready.is_set():
+                        LOGGER.warning("ApplicationReady received for (%s, %d) but association was already ready", req.ARUUID, req.SessionKey)
+                    assoc.application_ready.set()
                 # TODO: Check and dispatch to Association using req.ARUUID
                 return PNIOServiceResPDU(
                     blocks=[IODControlRes(
@@ -459,6 +469,7 @@ class ContextManagerActivity(PnioRpcActivity):
     @asynccontextmanager
     async def connect(self, aruuid=None, session_key=None, **kwargs):
         assoc = Association(self, aruuid=aruuid, session_key=session_key)
+        self.associations[(assoc.aruuid, assoc.session_key)] = assoc
         await assoc._connect(**kwargs)
         try:
             yield assoc

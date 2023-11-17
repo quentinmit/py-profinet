@@ -9,7 +9,7 @@ import aiomqtt
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
 
-def _to_json(slots: dict[int, Slot]) -> any:
+def _to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|bytes]]]:
     return {
         i: {
             j: {
@@ -21,7 +21,7 @@ def _to_json(slots: dict[int, Slot]) -> any:
         } for i, slot in slots.items()
     }
 
-def _outputs_to_json(slots: dict[int, Slot]) -> any:
+def _outputs_to_json(slots: dict[int, Slot]) -> dict:
     return {
         i: {
             j: {

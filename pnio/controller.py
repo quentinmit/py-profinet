@@ -72,6 +72,7 @@ class ProfinetDevice:
 
     @asynccontextmanager
     async def _connect(self, extra_blocks=[]):
+        LOGGER.info('Looking for station with name "%s"', self.name_of_station)
         # Locate device with DCP
         pkt = await self.rt.dcp_identify(self.name_of_station)
         mac = pkt[Ether].src
@@ -81,6 +82,7 @@ class ProfinetDevice:
         #        await rt.dcp_set_ip(mac, ip, netmask, gateway)
         ib = pkt[DeviceInstanceBlock]
         instance = (ib.device_instance_high << 8) | ib.device_instance_low
+        LOGGER.info('"%s" located at %s / %s', self.name_of_station, pkt[IPParameterBlock].ip, mac)
         cmrpc = ContextManagerActivity(
             protocol=self.rpc,
             dst_host=pkt[IPParameterBlock].ip,
@@ -98,6 +100,7 @@ class ProfinetDevice:
                 extra_blocks=extra_blocks,
         ) as assoc:
             self.mac = mac
+            LOGGER.info("Association (%s, %d) established", assoc.aruuid, assoc.session_key)
             self.send_seq_num = self.ack_seq_num = None
             yield assoc
 
@@ -183,7 +186,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
             for slot, subslot, index, value in self.config.parameter_values:
                 await assoc.write(data=value, slot=slot, subslot=subslot, index=index)
             await assoc.parameter_end()
-            # TODO: Await ApplicationReady
+            await assoc.application_ready.wait()
             yield assoc
 
     async def _cyclic_data_task(self, cr: IOCRBlockReq):
