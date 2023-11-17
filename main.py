@@ -180,7 +180,7 @@ async def main():
                                     for k, v in fields.items():
                                         device.slots[int(slot)].subslots[int(subslot)].output_data[k] = v
                         if message.topic.matches(command_topic):
-                            slot, subslot, field = message.topic.split("/")[-3:]
+                            slot, subslot, field = message.topic.value.split("/")[-3:]
                             device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
             async def pnio2mqtt():
                 async for slots in device.updates:
