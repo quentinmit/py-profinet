@@ -77,10 +77,11 @@ class ProfinetDevice:
 
     @asynccontextmanager
     async def _connect(self, extra_blocks=[]):
-        self.logger.info("Looking for station")
+        self.logger.info("looking for station")
         # Locate device with DCP
-        # TODO: Timeout + retries
-        pkt = await self.rt.dcp_identify(self.name_of_station)
+        # TODO: Retries?
+        with timeout(1.5):
+            pkt = await self.rt.dcp_identify(self.name_of_station)
         mac = pkt[Ether].src
         # TODO: Set the IP if it's not already set correctly.
         #if ipb := pkt.getlayer(IPParameterBlock):
@@ -305,7 +306,6 @@ class ProfinetInterface:
         device = ProfinetDeviceConfig(rt=self.rt, rpc=self.rpc, logger=self.logger, config=config, alarm_reference=alarm_reference)
         async with asyncio.TaskGroup() as tg:
             for cr in config.output_crs:
-                LOGGER.info("Starting cyclic data task for %s", cr.show2(dump=True))
                 tg.create_task(device._cyclic_data_task(cr))
             watchdog_time = max(
                 cr.WatchdogFactor * cr.SendClockFactor * cr.ReductionRatio / 32000

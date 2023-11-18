@@ -2,6 +2,7 @@ import logging
 import asyncio
 import argparse
 import json
+import sys
 
 import aiomqtt
 from scapy.config import conf
@@ -134,9 +135,10 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
     return out
 
 def setup_logging():
-    console = True
+    console = sys.stderr.isatty()
 
     shared_processors = [
+        structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
@@ -151,9 +153,20 @@ def setup_logging():
         ),
     ]
 
+    formatter_processors = []
+
     if console:
         shared_processors.extend([
             structlog.processors.format_exc_info,
+        ])
+        formatter_processors.extend([
+            # Remove _record & _from_structlog.
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(),
+        ])
+    else:
+        formatter_processors.extend([
+            structlog.PrintLogger(file=sys.stderr)
         ])
 
     structlog.configure(
@@ -169,11 +182,7 @@ def setup_logging():
         # structlog.
         foreign_pre_chain=shared_processors,
         # These run on ALL entries after the pre_chain is done.
-        processors=[
-            # Remove _record & _from_structlog.
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog.dev.ConsoleRenderer(),
-        ],
+        processors=formatter_processors,
     )
 
     handler = logging.StreamHandler()

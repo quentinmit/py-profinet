@@ -16,6 +16,9 @@ from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
 from .pnio_rpc import RPC_INTERFACE_UUID, Alarm_High, Alarm_Low, AlarmCRBlockReq, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IODControlReq, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.interfaces import resolve_iface
 from scapy.config import conf
+import structlog
+from structlog.stdlib import BoundLogger
+
 from .pnio import ProfinetIO, PNIORealTimeCyclicPDU
 from .pnio_dcp import (
     DeviceIDBlock,
@@ -37,13 +40,14 @@ from .rpc import ContextManagerActivity
 ETHERTYPE_PROFINET=0x8892
 MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
 
-LOGGER = logging.getLogger("profinet.rt")
+LOGGER = structlog.stdlib.get_logger("profinet.rt")
 
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
     pending_requests: dict[tuple[str, int], Queue]
     frame_handlers: dict[int, Callable[[ProfinetIO], None]]
     alarm_handlers: dict[tuple[int, int], Callable[[ProfinetIO], None]]
+    logger: BoundLogger
 
     def __init__(self):
         self.pending_requests = {}
@@ -52,12 +56,15 @@ class RTProtocol(DatagramProtocol):
             0xFE01: self._handle_alarm, # Alarm Low
         }
         self.alarm_handlers = {}
+        self.logger = LOGGER
 
     def connection_made(self, transport: DatagramTransport) -> None:
         self.transport = transport
         sockname = transport.get_extra_info('sockname')
         self.ifname = sockname[0]
         self.src_mac = sockname[4]
+        self.logger = self.logger.bind(ifname=self.ifname)
+        self.logger.info("socket opened", src_mac=self.src_mac)
         return super().connection_made(transport)
 
     async def dcp_req(self, req, dst_mac: str|bytes = MAC_PROFINET_BCAST):
@@ -111,7 +118,7 @@ class RTProtocol(DatagramProtocol):
 
     def send(self, pkt: Packet):
         pkt.sent_time = pkt.time = time.time()
-        LOGGER.debug("sending packet:\n%s", pkt.show2(dump=True))
+        self.logger.debug("sending packet", packet=pkt.show2(dump=True))
         if conf.debug_match:
             debug.sent.append(pkt)
         self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
@@ -121,10 +128,10 @@ class RTProtocol(DatagramProtocol):
         try:
             pkt = Ether(data)
         except:
-            LOGGER.exception("failed to parse packet")
+            self.logger.exception("failed to parse packet", bytes=data)
             return
         pkt.time = time.time()
-        LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
+        self.logger.debug("received packet", packet=pkt.show2(dump=True))
         if conf.debug_match:
             debug.recv.append(pkt)
         # TODO: Do something with packet
@@ -187,7 +194,7 @@ async def create_rt_endpoint(ifname, loop=None) -> RTProtocol:
     sock.bind((ifname, ETHERTYPE_PROFINET))
     sock.setblocking(False)
     mac_address = sock.getsockname()[4]
-    LOGGER.info("Creating RT endpoint on %s (%s)", ifname, mac_address.hex())
+    LOGGER.info("creating RT endpoint", ifname=ifname, mac_address=mac_address.hex())
     protocol = RTProtocol()
     waiter = loop.create_future()
     # N.B. asyncio.create_datagram_endpoint checks to make sure the type is SOCK_DGRAM.
