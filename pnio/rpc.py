@@ -120,7 +120,7 @@ class DceRpcProtocol(DatagramProtocol):
                 res = await fut
         finally:
             fut.cancel()
-            if self.pending_requests[(req.act_id, req.seqnum)] == fut:
+            if self.pending_requests.get((req.act_id, req.seqnum)) == fut:
                 del self.pending_requests[(req.act_id, req.seqnum)]
         if res.ptype == 2: # response
             return res.payload
