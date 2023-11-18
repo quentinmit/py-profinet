@@ -3,8 +3,9 @@ import asyncio
 import argparse
 import json
 
-from scapy.config import conf
 import aiomqtt
+from scapy.config import conf
+import structlog
 
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
@@ -132,6 +133,49 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
             # TODO: Binary sensors for overload, short circuit, defect?
     return out
 
+def setup_logging():
+    shared_processors = [
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.CallsiteParameterAdder(
+            {
+                structlog.processors.CallsiteParameter.FILENAME,
+                structlog.processors.CallsiteParameter.FUNC_NAME,
+                structlog.processors.CallsiteParameter.LINENO,
+            }
+        ),
+    ]
+
+    structlog.configure(
+        processors=shared_processors + [
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        # These run ONLY on `logging` entries that do NOT originate within
+        # structlog.
+        foreign_pre_chain=shared_processors,
+        # These run on ALL entries after the pre_chain is done.
+        processors=[
+            # Remove _record & _from_structlog.
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(),
+        ],
+    )
+
+    handler = logging.StreamHandler()
+    # Use OUR `ProcessorFormatter` to format all `logging` entries.
+    handler.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('filename')
@@ -192,5 +236,5 @@ async def main():
                 tg.create_task(pnio2mqtt())
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
     asyncio.run(main())

@@ -18,9 +18,11 @@ from .pnio_rpc import Alarm_High, Alarm_Low, IOCRBlockReq
 from async_timeout import timeout
 from scapy.layers.l2 import Ether
 from scapy.utils import hexdump
+import structlog
+from structlog.stdlib import BoundLogger
 
 
-LOGGER = logging.getLogger("profinet.controller")
+LOGGER = structlog.stdlib.getLogger("profinet.controller")
 
 
 def cycle_count() -> int:
@@ -43,6 +45,7 @@ class Slot:
 class ProfinetDevice:
     rt: RTProtocol
     rpc: DceRpcProtocol
+    logger: BoundLogger
     name_of_station: str
     alarm_reference: int
 
@@ -56,7 +59,7 @@ class ProfinetDevice:
     send_seq_num: int|None
     ack_seq_num: int|None
 
-    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, name_of_station: str, alarm_reference: int):
+    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, name_of_station: str, alarm_reference: int, logger: BoundLogger):
         self.rt = rt
         self.rpc = rpc
         self.name_of_station = name_of_station
@@ -68,13 +71,15 @@ class ProfinetDevice:
         self.connected = asyncio.Event()
         self._listeners = set()
 
+        self.logger = logger.bind(name_of_station=self.name_of_station, aruuid=self.aruuid)
         self.mac = None
         self.send_seq_num = self.ack_seq_num = None
 
     @asynccontextmanager
     async def _connect(self, extra_blocks=[]):
-        LOGGER.info('Looking for station with name "%s"', self.name_of_station)
+        self.logger.info("Looking for station")
         # Locate device with DCP
+        # TODO: Timeout + retries
         pkt = await self.rt.dcp_identify(self.name_of_station)
         mac = pkt[Ether].src
         # TODO: Set the IP if it's not already set correctly.
@@ -83,7 +88,7 @@ class ProfinetDevice:
         #        await rt.dcp_set_ip(mac, ip, netmask, gateway)
         ib = pkt[DeviceInstanceBlock]
         instance = (ib.device_instance_high << 8) | ib.device_instance_low
-        LOGGER.info('"%s" located at %s / %s', self.name_of_station, pkt[IPParameterBlock].ip, mac)
+        self.logger.info("station located", ip=pkt[IPParameterBlock].ip, mac=mac)
         cmrpc = ContextManagerActivity(
             protocol=self.rpc,
             dst_host=pkt[IPParameterBlock].ip,
@@ -101,9 +106,13 @@ class ProfinetDevice:
                 extra_blocks=extra_blocks,
         ) as assoc:
             self.mac = mac
-            LOGGER.info("Association (%s, %d) established", assoc.aruuid, assoc.session_key)
-            self.send_seq_num = self.ack_seq_num = None
-            yield assoc
+            try:
+                self.logger = self.logger.bind(session_key=assoc.session_key)
+                self.logger.info("association established")
+                self.send_seq_num = self.ack_seq_num = None
+                yield assoc
+            finally:
+                self.logger = self.logger.unbind("session_key")
 
     async def _reconnect_task(self, watchdog_time: float):
         while True:
@@ -116,13 +125,13 @@ class ProfinetDevice:
                         async for update in self.updates:
                             t.update(asyncio.get_running_loop().time() + watchdog_time)
                 except TimeoutError:
-                    LOGGER.error("No data received for %f s, reconnecting", watchdog_time)
+                    self.logger.error("no data received, reconnecting", timeout=watchdog_time)
                 finally:
                     self.connected.clear()
                 await asyncio.sleep(1)
 
     def _handle_alarm(self, pkt: ProfinetIO):
-        LOGGER.warn("Got alarm:\n%s", pkt.show(dump=True))
+        self.logger.warn("received alarm", alarm=pkt.show(dump=True))
         send_seq_num = self.send_seq_num
         if send_seq_num is None:
             send_seq_num = 0xFFFE
@@ -197,11 +206,12 @@ class ProfinetDeviceConfig(ProfinetDevice):
 
     async def _cyclic_data_task(self, cr: IOCRBlockReq):
         cycle_interval = cr.SendClockFactor * cr.ReductionRatio
-        LOGGER.debug("Starting cyclic data for output frame 0x%04x every 0x%04x cycles", cr.FrameID, cycle_interval)
+        logger = self.logger.bind(frame_id=cr.FrameID)
+        logger.info("starting cyclic data task every 0x%04x cycles", cycle_interval)
         while True:
             now = cycle_count()
             next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
-            LOGGER.debug("Current cycle counter %d, next cycle counter %d", now, next_cycle_count)
+            logger.debug("tick", current_cycle_counter=now, next_cycle_counter=next_cycle_count)
             await asyncio.sleep((next_cycle_count - now) / 32000)
             data = bytearray(self.config.output_frame_size)
             for slot in self.config.slots:
@@ -217,7 +227,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                             *[self.slots[subslot.slot].subslots[subslot.subslot].output_data[name] for name in field_names]
                         )
                     except struct.error:
-                        LOGGER.warn("Output data not ready yet")
+                        logger.warn("output data not ready yet", slot=subslot.slot, subslot=subslot.subslot)
                     else:
                         struct.pack_into(
                             ">B",
@@ -226,7 +236,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                             0x80, # TODO: Use PNIORealTime_IOxS
                         )
 
-            LOGGER.debug("Output\n%s", hexdump(data, dump=1))
+            logger.debug("output frame", data=hexdump(data, dump=1))
             if self.mac:
                 self.rt.send_cyclic_data_frame(
                     data=data,
@@ -266,6 +276,7 @@ class ProfinetInterface:
     rt: RTProtocol
     rpc: DceRpcProtocol
     alarm_reference: int
+    logger: BoundLogger
 
     @classmethod
     async def from_config(cls, config: ConfigReader):
@@ -275,6 +286,7 @@ class ProfinetInterface:
         self.rt = rt
         self.rpc = rpc
         self.alarm_reference = 1
+        self.logger = LOGGER.bind(ifname=self.rt.ifname)
 
     @asynccontextmanager
     async def open_device(self, name_of_station: str, extra_blocks=[]) -> AsyncGenerator[ProfinetDevice, None]:
