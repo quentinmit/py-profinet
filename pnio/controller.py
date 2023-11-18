@@ -28,13 +28,14 @@ LOGGER = structlog.stdlib.get_logger("profinet.controller")
 def cycle_count() -> int:
     return int(asyncio.get_running_loop().time() * 32000)
 
+IOXS_CONTROLLER_BAD = PNIORealTime_IOxS(dataState=0, instance=3)
 
 @dataclass
 class Subslot:
     input_data: dict[str, int | None]
     output_data: dict[str, int | None]
-    input_iops: PNIORealTime_IOxS = field(default_factory=lambda: PNIORealTime_IOxS(b"\0"))
-    output_iocs: PNIORealTime_IOxS = field(default_factory=lambda: PNIORealTime_IOxS(b"\0"))
+    input_iops: PNIORealTime_IOxS = field(default_factory=lambda: IOXS_CONTROLLER_BAD)
+    output_iocs: PNIORealTime_IOxS = field(default_factory=lambda: IOXS_CONTROLLER_BAD)
 
 
 @dataclass
@@ -114,6 +115,13 @@ class ProfinetDevice:
                 yield assoc
             finally:
                 self.logger = self.logger.unbind("session_key")
+                # TODO: Technically the data isn't supposed to go bad until DataHoldFactor has elapsed
+                for slot in self.slots.values():
+                    for subslot in slot.subslots.values():
+                        for k in subslot.input_data:
+                            subslot.input_data[k] = None
+                        subslot.input_iops = IOXS_CONTROLLER_BAD
+                self._signal_update()
 
     async def _reconnect_task(self, watchdog_time: float):
         while True:
