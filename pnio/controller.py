@@ -117,19 +117,24 @@ class ProfinetDevice:
 
     async def _reconnect_task(self, watchdog_time: float):
         while True:
-            async with self._connect() as assoc:
-                self.connected.set()
-                # TODO: Allow disconnection for other reasons
-                # disconnect_fut = asyncio.get_running_loop().create_future()
-                try:
-                    async with timeout(watchdog_time) as t:
-                        async for update in self.updates:
-                            t.update(asyncio.get_running_loop().time() + watchdog_time)
-                except TimeoutError:
-                    self.logger.error("no data received, reconnecting", timeout=watchdog_time)
-                finally:
-                    self.connected.clear()
-                await asyncio.sleep(1)
+            try:
+                async with self._connect() as assoc:
+                    self.connected.set()
+                    # TODO: Allow disconnection for other reasons
+                    # disconnect_fut = asyncio.get_running_loop().create_future()
+                    try:
+                        async with timeout(watchdog_time) as t:
+                            async for update in self.updates:
+                                t.update(asyncio.get_running_loop().time() + watchdog_time)
+                    except TimeoutError:
+                        self.logger.error("no data received, reconnecting", timeout=watchdog_time)
+                    finally:
+                        self.connected.clear()
+                    await asyncio.sleep(1)
+            except TimeoutError:
+                self.logger.error("CM RPC timed out")
+            except Exception:
+                self.logger.exception("CM RPC error")
 
     def _handle_alarm(self, pkt: ProfinetIO):
         self.logger.warn("received alarm", alarm=pkt.show(dump=True))
