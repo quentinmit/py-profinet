@@ -9,6 +9,7 @@ import socket
 import uuid
 from typing import Any, Optional, Tuple
 
+import async_timeout
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
@@ -109,16 +110,18 @@ class DceRpcProtocol(DatagramProtocol):
             logging.exception("Failed to handle incoming request")
         self.send(out, src_addr)
 
-    async def call_rpc(self, req: DceRpc4, dst_addr: tuple[str, int]):
+    async def call_rpc(self, req: DceRpc4, dst_addr: tuple[str, int], timeout: float|None = 1):
         fut = get_running_loop().create_future()
         try:
             self.pending_requests[(req.act_id, req.seqnum)] = fut
             self.send(req, dst_addr)
-            # TODO: Timeout?
-            # TODO: Retries
-            res = await fut
+            with async_timeout.timeout(timeout):
+                # TODO: Retries
+                res = await fut
         finally:
             fut.cancel()
+            if self.pending_requests[(req.act_id, req.seqnum)] == fut:
+                del self.pending_requests[(req.act_id, req.seqnum)]
         if res.ptype == 2: # response
             return res.payload
         elif res.ptype in (3, 6): # fault, reject
