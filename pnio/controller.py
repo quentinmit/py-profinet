@@ -22,7 +22,7 @@ import structlog
 from structlog.stdlib import BoundLogger
 
 
-LOGGER = structlog.stdlib.getLogger("profinet.controller")
+LOGGER = structlog.stdlib.get_logger("profinet.controller")
 
 
 def cycle_count() -> int:
@@ -59,7 +59,7 @@ class ProfinetDevice:
     send_seq_num: int|None
     ack_seq_num: int|None
 
-    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, name_of_station: str, alarm_reference: int, logger: BoundLogger):
+    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, logger: BoundLogger, name_of_station: str, alarm_reference: int):
         self.rt = rt
         self.rpc = rpc
         self.name_of_station = name_of_station
@@ -168,10 +168,11 @@ class ProfinetDevice:
 class ProfinetDeviceConfig(ProfinetDevice):
     config: ConfigReader
 
-    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, config: ConfigReader, alarm_reference: int):
+    def __init__(self, rt: RTProtocol, rpc: DceRpcProtocol, logger: BoundLogger, config: ConfigReader, alarm_reference: int):
         super().__init__(
             rt=rt,
             rpc=rpc,
+            logger=logger,
             name_of_station=config.config["name_of_station"],
             alarm_reference=alarm_reference,
         )
@@ -254,7 +255,6 @@ class ProfinetDeviceConfig(ProfinetDevice):
         input_format, input_fields = self.config.input_struct
         def _handle_input_frame(frame: ProfinetIO):
             data = frame[PNIORealTimeCyclicDefaultRawData].data
-            LOGGER.debug("Input\n%s", hexdump(data, dump=1))
             values = struct.unpack_from(input_format, buffer=data)
             for (slot, subslot, name), value in zip(reversed(input_fields), reversed(values)):
                 subslot = self.slots[slot].subslots[subslot]
@@ -266,7 +266,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                     subslot.input_data[name] = value
                 else:
                     subslot.input_data[name] = None
-            LOGGER.debug("Input frame: %r", self.slots)
+            self.logger.debug("input frame", bytes=hexdump(data, dump=1), data=self.slots)
             self._signal_update()
         for frame_id in assoc.input_frame_ids:
             self.rt.register_frame_handler(frame_id, _handle_input_frame)
@@ -293,7 +293,7 @@ class ProfinetInterface:
         alarm_reference = self.alarm_reference
         self.alarm_reference += 1
 
-        device = ProfinetDevice(rt=self.rt, rpc=self.rpc, name_of_station=name_of_station, alarm_reference=alarm_reference)
+        device = ProfinetDevice(rt=self.rt, rpc=self.rpc, logger=self.logger, name_of_station=name_of_station, alarm_reference=alarm_reference)
 
         yield device
 
@@ -302,7 +302,7 @@ class ProfinetInterface:
         alarm_reference = self.alarm_reference
         self.alarm_reference += 1
 
-        device = ProfinetDeviceConfig(rt=self.rt, rpc=self.rpc, config=config, alarm_reference=alarm_reference)
+        device = ProfinetDeviceConfig(rt=self.rt, rpc=self.rpc, logger=self.logger, config=config, alarm_reference=alarm_reference)
         async with asyncio.TaskGroup() as tg:
             for cr in config.output_crs:
                 LOGGER.info("Starting cyclic data task for %s", cr.show2(dump=True))

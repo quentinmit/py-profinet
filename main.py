@@ -134,12 +134,14 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
     return out
 
 def setup_logging():
+    console = True
+
     shared_processors = [
+        structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         structlog.processors.CallsiteParameterAdder(
             {
                 structlog.processors.CallsiteParameter.FILENAME,
@@ -148,6 +150,11 @@ def setup_logging():
             }
         ),
     ]
+
+    if console:
+        shared_processors.extend([
+            structlog.processors.format_exc_info,
+        ])
 
     structlog.configure(
         processors=shared_processors + [
