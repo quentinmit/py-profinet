@@ -15,8 +15,10 @@ from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
 from .pnio_rpc import RPC_INTERFACE_UUID, AlarmCRBlockReq, AlarmCRBlockRes, Block, ARBlockReq, RPC_IO_OPNUM, ExpectedSubmodule, ExpectedSubmoduleBlockReq, ExpectedSubmoduleDataDescription, ExpectedSubmoduleAPI, IOCRBlockRes, IODControlReq, IODControlRes, IODReadReq, IODWriteReq, PNIOServiceReqPDU, PNIOServiceResPDU, RealIdentificationDataSubslot, NDREPMapLookupReq
 from scapy.config import conf
+import structlog
+from structlog.stdlib import BoundLogger
 
-LOGGER = logging.getLogger("profinet.rpc")
+LOGGER = structlog.stdlib.get_logger("profinet.rpc")
 
 
 class debug:
@@ -39,19 +41,25 @@ class DceRpcProtocol(DatagramProtocol):
     pending_requests: dict[tuple[uuid.UUID, int], Future]
     registered_handlers: dict[tuple[uuid.UUID, uuid.UUID], Callable[[DceRpc4], Awaitable[Packet]]]
     instance: int
+    logger: BoundLogger
 
     def __init__(self):
         self.pending_requests = dict()
         self.registered_handlers = dict()
         self.instance = 0
+        self.logger = LOGGER
         super().__init__()
 
     def register_handler(self, object: uuid.UUID, interface: uuid.UUID, handler: Callable[[DceRpc4], Awaitable[Packet]]):
         self.registered_handlers[object, interface] = handler
 
     def connection_made(self, transport: DatagramTransport) -> None:
-        LOGGER.info("connection made: %s", transport)
         self.transport = transport
+        local_addr = self.transport.get_extra_info('sockname', (None, None))
+        self.logger = self.logger.bind(
+            local_addr=local_addr,
+        )
+        self.logger.info("connection made")
         return super().connection_made(transport)
 
     def datagram_received(self, data: bytes, src_addr: tuple[str | Any, int]) -> None:
@@ -59,10 +67,10 @@ class DceRpcProtocol(DatagramProtocol):
         try:
             pkt = DceRpc4(data)
         except:
-            LOGGER.exception("failed to parse packet")
+            self.logger.exception("failed to parse packet", bytes=data)
             return
         pkt.time = time.time()
-        LOGGER.debug("received packet:\n%s", pkt.show2(dump=True))
+        self.logger.debug("received packet", packet=pkt.show2(dump=True))
         if conf.debug_match:
             from scapy.layers.inet import IP, UDP
             dst_addr = self.transport.get_extra_info('sockname', (None, None))
@@ -84,7 +92,7 @@ class DceRpcProtocol(DatagramProtocol):
         elif pkt.ptype == 0: # Request
             get_running_loop().create_task(self._handle_request(pkt, src_addr))
         else:
-            LOGGER.warning("received unknown sequence number: %s", pkt.show2(dump=True))
+            self.logger.warning("received unknown sequence number", act_id=pkt.act_id, seqnum=pkt.seqnum, packet=pkt.show2(dump=True))
 
     async def _handle_request(self, pkt: DceRpc4, src_addr: tuple[str | Any, int]):
         out = DceRpc4(
@@ -130,7 +138,7 @@ class DceRpcProtocol(DatagramProtocol):
             raise ValueError("unexpected response type: %s" % (res.ptype,))
 
     def send(self, pkt: DceRpc4, dst_addr: tuple[str, int]):
-        LOGGER.debug("sending packet:\n%s", pkt.show2(dump=True))
+        self.logger.debug("sending packet", packet=pkt.show2(dump=True))
         pkt.sent_time = pkt.time = time.time()
         if conf.debug_match:
             from scapy.layers.inet import IP, UDP
@@ -156,6 +164,10 @@ async def create_rpc_endpoint(port: int = socket.getservbyname("profinet-cm"), l
     return protocol
 
 class Activity:
+    protocol: DceRpcProtocol
+    dst_host: str
+    logger: BoundLogger
+
     def __init__(self, protocol: DceRpcProtocol, dst_host: str):
         self.protocol = protocol
         self.dst_host = dst_host
@@ -165,6 +177,7 @@ class Activity:
         self.activity_uuid = uuid.uuid4()
         self.serial_number = 0
         self.endpoints_by_interface = None
+        self.logger = protocol.logger.bind(remote_addr=self.dst_host)
 
 
     def _get_header(self, opnum, seqnum=None):
@@ -318,7 +331,7 @@ class PnioRpcActivity(Activity):
             object=self.object,
         )
         if not isinstance(res, PNIOServiceResPDU):
-            LOGGER.error("didn't receive a PNIOServiceResPDU:\n%s", res.show2(dump=True))
+            self.logger.error("didn't receive a PNIOServiceResPDU", packet=res.show2(dump=True))
             raise ValueError("missing PNIOServiceResPDU")
         if res.status != 0:
             raise PnioRpcError(res.status)
@@ -456,7 +469,7 @@ class ContextManagerActivity(PnioRpcActivity):
             if isinstance(req, IODControlReq) and req.ControlCommand_ApplicationReady:
                 if assoc := self.associations.get((req.ARUUID, req.SessionKey)):
                     if assoc.application_ready.is_set():
-                        LOGGER.warning("ApplicationReady received for (%s, %d) but association was already ready", req.ARUUID, req.SessionKey)
+                        self.logger.warning("ApplicationReady received but association was already ready", aruuid=req.ARUUID, session_key=req.SessionKey)
                     assoc.application_ready.set()
                 # TODO: Check and dispatch to Association using req.ARUUID
                 return PNIOServiceResPDU(
