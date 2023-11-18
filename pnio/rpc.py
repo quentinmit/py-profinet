@@ -138,7 +138,7 @@ class DceRpcProtocol(DatagramProtocol):
             raise ValueError("unexpected response type: %s" % (res.ptype,))
 
     def send(self, pkt: DceRpc4, dst_addr: tuple[str, int]):
-        self.logger.debug("sending packet", packet=pkt.show2(dump=True))
+        self.logger.debug("sending packet", packet=pkt.show2(dump=True), dst_addr=dst_addr)
         pkt.sent_time = pkt.time = time.time()
         if conf.debug_match:
             from scapy.layers.inet import IP, UDP
