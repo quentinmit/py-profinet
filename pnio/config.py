@@ -74,7 +74,7 @@ class ConfigReader:
             out[parameter.index] = parameter_bytes
         return out
 
-    def _calculate_slots(self) -> list[Slot]:
+    def _calculate_slots(self):
         out = []
         input_frame_offset = output_frame_offset = 0
         def input(n = 1):

@@ -167,7 +167,7 @@ class ProfinetDevice:
             l.set()
 
     @property
-    async def updates(self):
+    async def updates(self) -> AsyncGenerator[dict[int, Slot], None]:
         e = asyncio.Event()
         self._listeners.add(e)
         try:

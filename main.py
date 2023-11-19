@@ -11,7 +11,7 @@ import structlog
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
 
-def _to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|bytes]]]:
+def _to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|None]]]:
     return {
         i: {
             j: {
