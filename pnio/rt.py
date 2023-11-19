@@ -84,6 +84,11 @@ class CycleCounter:
     def seconds(self) -> float:
         return self.value / CYCLE_COUNTER_HZ
 
+    def __add__(self, other: Self) -> Self:
+        if other.wallclock:
+            raise ValueError("can't add a wallclock value")
+        return type(self)(value=(self.value+other.value), wallclock=self.wallclock)
+
     def __sub__(self, other: Self | int) -> Self:
         if isinstance(other, CycleCounter):
             if self.wallclock != other.wallclock:

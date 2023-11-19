@@ -5,7 +5,7 @@ import json
 import sys
 
 import aiomqtt
-from pnio.rt import CYCLE_COUNTER_HZ
+from pnio.rt import CYCLE_COUNTER_HZ, CycleCounter
 from scapy.config import conf
 import structlog
 
@@ -43,6 +43,7 @@ class Caparoc:
     device: ProfinetDevice
 
     last_cycle_count: CycleCounter | None
+    total_cycles: CycleCounter
     # Energy counters are in units of 10 mV * 100 mA * 31.25 µs = 1 mW / 32000 Hz
     total_system_energy: int
     channel_total_energy: dict[tuple[int, int, int], int]
@@ -51,6 +52,7 @@ class Caparoc:
         self.config = config
         self.device = device
         self.last_cycle_count = None
+        self.total_cycles = CycleCounter(0, False)
         self.total_system_energy = 0
         self.channel_total_energy = {k: 0 for k in self._actual_channels}
 
@@ -159,20 +161,21 @@ class Caparoc:
 
     async def update(self, update: Update, client: aiomqtt.Client):
         try:
-            if self.last_cycle_count:
+            if self.last_cycle_count and update.input_cycle_count:
                 delta_t = (update.input_cycle_count - self.last_cycle_count)
+                self.total_cycles += delta_t
 
                 # Units of 10 mV
                 system_voltage = update.slots[0].subslots[2].input_data["System input voltage"]
                 system_current = update.slots[0].subslots[2].input_data["Total system current"]
 
                 if system_voltage and system_current:
-                    self.total_system_energy += system_voltage * system_current * delta_t
+                    self.total_system_energy += system_voltage * system_current * delta_t.value
 
                 for slot, subslot, channel in self._actual_channels:
                     channel_current = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} load current"]
                     if system_voltage and channel_current:
-                        self.channel_total_energy[slot, subslot, channel] += system_voltage * channel_current * delta_t
+                        self.channel_total_energy[slot, subslot, channel] += system_voltage * channel_current * delta_t.value
 
                 await self._publish(client)
         finally:
@@ -185,6 +188,7 @@ class Caparoc:
             self.config.mqtt_topic("caparoc/inputs"),
             json.dumps(
                 {
+                    "total_time": self.total_cycles.seconds,
                     "total_system_energy_joules": self.total_system_energy * energy_to_joules,
                 } | {
                     f"{slot}_{subslot}_{channel}": {
