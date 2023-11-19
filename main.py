@@ -11,6 +11,10 @@ import structlog
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
 
+
+LOGGER = structlog.stdlib.get_logger()
+
+
 def _inputs_to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|None]]]:
     return {
         i: {
@@ -206,46 +210,51 @@ async def main():
     interface = await ProfinetInterface.from_config(config)
 
     async with interface.open_device_from_config(config) as device:
-        async with aiomqtt.Client(config.mqtt_server) as mqtt_client:
-            output_topic = config.mqtt_topic("outputs")
-            input_topic = config.mqtt_topic("inputs")
-            command_topic = config.mqtt_topic("command/#")
-            async def mqtt2pnio():
-                async with mqtt_client.messages() as messages:
-                    await mqtt_client.subscribe("homeassistant/status")
-                    await mqtt_client.subscribe(output_topic)
-                    await mqtt_client.subscribe(input_topic)
-                    await mqtt_client.subscribe(command_topic, qos=1)
-                    async for message in messages:
-                        if message.topic.matches("homeassistant/status") and message.payload == b"online":
-                            logging.info("Received Home Assistant birth message; sending discovery messages")
-                            # Home Assistant is (newly?) online, send discovery messages
-                            for (domain, name), payload in get_discovery_messages(config, device).items():
-                                await mqtt_client.publish(
-                                    "homeassistant/%s/%s/%s/config" % (
-                                        domain,
-                                        config.config["name_of_station"],
-                                        name,
-                                    ),
-                                    payload=json.dumps(payload),
-                                )
-                        if message.topic.matches(output_topic) and message.retain:
-                            # Reload initial output state from MQTT
-                            data = json.loads(message.payload)
-                            for slot, subslots in data.items():
-                                for subslot, fields in subslots.items():
-                                    for k, v in fields.items():
-                                        device.slots[int(slot)].subslots[int(subslot)].output_data[k] = v
-                        if message.topic.matches(command_topic):
-                            slot, subslot, field = message.topic.value.split("/")[-3:]
-                            device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
-            async def pnio2mqtt():
-                async for update in device.updates:
-                    await mqtt_client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots)))
-                    await mqtt_client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True)
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(mqtt2pnio())
-                tg.create_task(pnio2mqtt())
+        while True:
+            try:
+                async with aiomqtt.Client(config.mqtt_server) as mqtt_client:
+                    output_topic = config.mqtt_topic("outputs")
+                    input_topic = config.mqtt_topic("inputs")
+                    command_topic = config.mqtt_topic("command/#")
+                    async def mqtt2pnio():
+                        async with mqtt_client.messages() as messages:
+                            await mqtt_client.subscribe("homeassistant/status")
+                            await mqtt_client.subscribe(output_topic)
+                            await mqtt_client.subscribe(input_topic)
+                            await mqtt_client.subscribe(command_topic, qos=1)
+                            async for message in messages:
+                                if message.topic.matches("homeassistant/status") and message.payload == b"online":
+                                    LOGGER.info("received Home Assistant birth message; sending discovery messages")
+                                    # Home Assistant is (newly?) online, send discovery messages
+                                    for (domain, name), payload in get_discovery_messages(config, device).items():
+                                        await mqtt_client.publish(
+                                            "homeassistant/%s/%s/%s/config" % (
+                                                domain,
+                                                config.config["name_of_station"],
+                                                name,
+                                            ),
+                                            payload=json.dumps(payload),
+                                        )
+                                if message.topic.matches(output_topic) and message.retain:
+                                    # Reload initial output state from MQTT
+                                    data = json.loads(message.payload)
+                                    for slot, subslots in data.items():
+                                        for subslot, fields in subslots.items():
+                                            for k, v in fields.items():
+                                                device.slots[int(slot)].subslots[int(subslot)].output_data[k] = v
+                                if message.topic.matches(command_topic):
+                                    slot, subslot, field = message.topic.value.split("/")[-3:]
+                                    device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
+                    async def pnio2mqtt():
+                        async for update in device.updates:
+                            await mqtt_client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots)))
+                            await mqtt_client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True)
+                    async with asyncio.TaskGroup() as tg:
+                        tg.create_task(mqtt2pnio())
+                        tg.create_task(pnio2mqtt())
+            except aiomqtt.MqttError:
+                LOGGER.exception("mqtt connection lost; reconnecting")
+                await asyncio.sleep(1)
 
 if __name__ == "__main__":
     setup_logging()
