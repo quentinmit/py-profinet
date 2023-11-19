@@ -5,11 +5,12 @@ import json
 import sys
 
 import aiomqtt
+from pnio.rt import CYCLE_COUNTER_HZ
 from scapy.config import conf
 import structlog
 
 from pnio.config import ConfigReader
-from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
+from pnio.controller import ProfinetDevice, ProfinetInterface, Slot, Update
 
 
 LOGGER = structlog.stdlib.get_logger()
@@ -37,19 +38,44 @@ def _outputs_to_json(slots: dict[int, Slot]) -> dict:
         } for i, slot in slots.items()
     }
 
-def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict[tuple[str, str], dict]:
-    input_topic = config.mqtt_topic("inputs")
-    device_name = config.config["mqtt"]["device"]["name"]
-    ha_device = {
-        "connections": [
-            ["mac", device.mac],
-        ],
-        "manufacturer": config.gsdml.vendor_name,
-        "model": config.gsdml.device_info,
-        "name": device_name,
-    }
-    out = {}
-    if caparoc := config.config.get("caparoc"):
+class Caparoc:
+    config: ConfigReader
+    device: ProfinetDevice
+
+    last_cycle_count: CycleCounter | None
+    # Energy counters are in units of 10 mV * 100 mA * 31.25 µs = 1 mW / 32000 Hz
+    total_system_energy: int
+    channel_total_energy: dict[tuple[int, int, int], int]
+
+    def __init__(self, config: ConfigReader, device: ProfinetDevice):
+        self.config = config
+        self.device = device
+        self.last_cycle_count = None
+        self.total_system_energy = 0
+        self.channel_total_energy = {k: 0 for k in self._actual_channels}
+
+    @property
+    def _actual_channels(self) -> list[tuple[int, int, int]]:
+        return sorted([
+            (i, j, int(name.split()[2]))
+            for i, slot in self.device.slots.items()
+            for j, subslot in slot.subslots.items()
+            for name in subslot.output_data
+            if name.startswith("Control channel")
+        ])
+
+    def get_discovery_messages(self) -> dict[tuple[str, str], dict]:
+        input_topic = self.config.mqtt_topic("inputs")
+        device_name = self.config.config["mqtt"]["device"]["name"]
+        ha_device = {
+            "connections": [
+                ["mac", self.device.mac],
+            ],
+            "manufacturer": self.config.gsdml.vendor_name,
+            "model": self.config.gsdml.device_info,
+            "name": device_name,
+        }
+        out = {}
         avail = (lambda vj_expr: [{
             "topic": input_topic,
             "value_template": "{%% if %s is none %%}offline{%% else %%}online{%% endif %%}" % (vj_expr),
@@ -81,14 +107,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
             "suggested_display_precision": 2,
         }
         # TODO: Expose binary sensors for undervoltage, overvoltage, channel error, warning, total current shutdown
-        actual_channels = sorted([
-            (i, j, int(name.split()[2]))
-            for i, slot in device.slots.items()
-            for j, subslot in slot.subslots.items()
-            for name in subslot.output_data
-            if name.startswith("Control channel")
-        ])
-        for (channel_name, (slot, subslot, channel_number)) in zip(caparoc["channels"], actual_channels):
+        for (channel_name, (slot, subslot, channel_number)) in zip(self.config.config["caparoc"]["channels"], self._actual_channels):
             if channel_name is None:
                 continue
             vj = lambda tmpl: ('value_json["%d"]["%d"]["' + tmpl + '"]') % (slot, subslot, channel_number)
@@ -98,7 +117,7 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
             unique_id = channel_name
             out[("switch", mqtt_key)] = {
                 "availability": availability,
-                "command_topic": config.mqtt_topic("command/%d/%d/Control channel %d" % (slot, subslot, channel_number)),
+                "command_topic": self.config.mqtt_topic("command/%d/%d/Control channel %d" % (slot, subslot, channel_number)),
                 "device": ha_device,
                 #"entity_category": "config",
                 "payload_on": "129",
@@ -136,11 +155,56 @@ def get_discovery_messages(config: ConfigReader, device: ProfinetDevice) -> dict
                 "suggested_display_precision": 1,
             }
             # TODO: Binary sensors for overload, short circuit, defect?
-    return out
+        return out
+
+    async def update(self, update: Update, client: aiomqtt.Client):
+        try:
+            if self.last_cycle_count:
+                delta_t = (update.input_cycle_count - self.last_cycle_count)
+
+                # Units of 10 mV
+                system_voltage = update.slots[0].subslots[2].input_data["System input voltage"]
+                system_current = update.slots[0].subslots[2].input_data["Total system current"]
+
+                if system_voltage and system_current:
+                    self.total_system_energy += system_voltage * system_current * delta_t
+
+                for slot, subslot, channel in self._actual_channels:
+                    channel_current = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} load current"]
+                    if system_voltage and channel_current:
+                        self.channel_total_energy[slot, subslot, channel] += system_voltage * channel_current * delta_t
+
+                await self._publish(client)
+        finally:
+            self.last_cycle_count = update.input_cycle_count
+
+    async def _publish(self, client: aiomqtt.Client):
+        energy_to_joules = 0.001 / CYCLE_COUNTER_HZ
+
+        await client.publish(
+            self.config.mqtt_topic("caparoc/inputs"),
+            json.dumps(
+                {
+                    "total_system_energy_joules": self.total_system_energy * energy_to_joules,
+                } | {
+                    f"{slot}_{subslot}_{channel}": {
+                        "total_energy_joules": self.channel_total_energy[slot, subslot, channel] * energy_to_joules,
+                    }
+                    for slot, subslot, channel in self.channel_total_energy
+                }
+            )
+        )
 
 class ProfinetMqtt:
     def __init__(self, config: ConfigReader):
         self.config = config
+        self.plugins = []
+
+    def _get_discovery_messages(self) -> dict[tuple[str, str], dict]:
+        out = {}
+        for p in self.plugins:
+            out.update(p.get_discovery_messages())
+        return out
 
     async def _run_once(self, device: ProfinetDevice, client: aiomqtt.Client):
         output_topic = self.config.mqtt_topic("outputs")
@@ -156,7 +220,7 @@ class ProfinetMqtt:
                     if message.topic.matches("homeassistant/status") and message.payload == b"online":
                         LOGGER.info("received Home Assistant birth message; sending discovery messages")
                         # Home Assistant is (newly?) online, send discovery messages
-                        for (domain, name), payload in get_discovery_messages(self.config, device).items():
+                        for (domain, name), payload in self._get_discovery_messages().items():
                             await client.publish(
                                 "homeassistant/%s/%s/%s/config" % (
                                     domain,
@@ -177,8 +241,11 @@ class ProfinetMqtt:
                         device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
         async def pnio2mqtt():
             async for update in device.updates:
-                await client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots)))
-                await client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True)
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots))))
+                    tg.create_task(client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True))
+                    for p in self.plugins:
+                        tg.create_task(p.update(update, client))
         async with asyncio.TaskGroup() as tg:
             tg.create_task(mqtt2pnio())
             tg.create_task(pnio2mqtt())
@@ -187,6 +254,9 @@ class ProfinetMqtt:
         interface = await ProfinetInterface.from_config(self.config)
 
         async with interface.open_device_from_config(self.config) as device:
+            self.plugins = []
+            if "caparoc" in self.config.config:
+                self.plugins.append(Caparoc(self.config, device))
             while True:
                 try:
                     async with aiomqtt.Client(self.config.mqtt_server) as mqtt_client:
