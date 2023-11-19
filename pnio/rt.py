@@ -1,13 +1,15 @@
 from asyncio import Queue, get_running_loop, DatagramProtocol, DatagramTransport, Future
+import asyncio.futures
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import enum
 import logging
 import random
 import time
 import socket
 import uuid
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Self
 
 from scapy.packet import Packet
 from scapy.plist import PacketList
@@ -39,8 +41,67 @@ from .rpc import ContextManagerActivity
 
 ETHERTYPE_PROFINET=0x8892
 MAC_PROFINET_BCAST= "01:0e:cf:00:00:00"
+CYCLE_COUNTER_HZ = 32000
 
 LOGGER = structlog.stdlib.get_logger("profinet.rt")
+
+
+class StaleCycleCounterError(ValueError):
+    pass
+
+
+@dataclass
+class CycleCounter:
+    value: int
+    wallclock: bool
+
+    @classmethod
+    def now(cls) -> Self:
+        # Unit is steps of 31.25 µs
+        return cls(value=int(get_running_loop().time() * CYCLE_COUNTER_HZ), wallclock=True)
+
+    @classmethod
+    def from_rt(cls, value: int, last: Self | None) -> Self:
+        if not last:
+            return cls(value=value, wallclock=False)
+
+        diff = (last.value_for_rt - value) & 0xFFFF
+        if diff < 0x1000:
+            raise StaleCycleCounterError()
+        return cls(value=last.value + (-diff & 0xFFFF), wallclock=last.wallclock)
+
+    @property
+    def value_for_rt(self) -> int:
+        return self.value & 0xFFFF
+
+    @property
+    def asyncio_time(self) -> float:
+        if not self.wallclock:
+            raise ValueError("attempting to await a cycle counter that didn't come from a wallclock")
+        return self.value / CYCLE_COUNTER_HZ
+
+    def next_tick(self, phase: int, reduction_ratio: int, send_clock_factor: int) -> Self:
+        return type(self)(
+            value=(
+                (
+                    self.value // (send_clock_factor * reduction_ratio) + 1
+                ) * reduction_ratio + phase
+            ) * send_clock_factor,
+            wallclock=self.wallclock,
+        )
+
+    def __await__(self):
+        return self.wait().__await__()
+
+    async def wait(self):
+        loop = get_running_loop()
+        future = loop.create_future()
+        h = loop.call_at(self.asyncio_time, asyncio.futures._set_result_unless_cancelled, future, None)
+        try:
+            return await future
+        finally:
+            h.cancel()
+
 
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
@@ -157,13 +218,12 @@ class RTProtocol(DatagramProtocol):
         if handler := self.alarm_handlers.get(endpoints):
             handler(pkt)
 
-    def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: int | None):
+    def send_cyclic_data_frame(self, data: bytes, frame_id: int, dst_mac: str | bytes, cycle_counter: CycleCounter | None):
         if cycle_counter is None:
-            # Unit is steps of 31.25 µs
-            cycle_counter = int(time.time() * 32000)
+            cycle_counter = CycleCounter.now()
         self.send_frame(
             PNIORealTimeCyclicPDU(
-                cycleCounter=cycle_counter & 0xFFFF,
+                cycleCounter=cycle_counter.value_for_rt,
                 data=[data],
             ),
             frame_id=frame_id,

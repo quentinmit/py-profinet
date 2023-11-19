@@ -11,7 +11,7 @@ import structlog
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot
 
-def _to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|None]]]:
+def _inputs_to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|None]]]:
     return {
         i: {
             j: {
@@ -243,9 +243,8 @@ async def main():
                             slot, subslot, field = message.topic.value.split("/")[-3:]
                             device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
             async def pnio2mqtt():
-                async for slots in device.updates:
-                    data = _to_json(slots)
-                    await mqtt_client.publish("workshop/power/inputs", payload=json.dumps(data))
+                async for update in device.updates:
+                    await mqtt_client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots)))
                     await mqtt_client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True)
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(mqtt2pnio())

@@ -7,11 +7,11 @@ import struct
 from typing import Optional
 import uuid
 
-from .pnio import PNIORealTime_IOxS, PNIORealTimeCyclicDefaultRawData, ProfinetIO
+from .pnio import PNIORealTime_IOxS, PNIORealTimeCyclicDefaultRawData, PNIORealTimeCyclicPDU, ProfinetIO
 
 from .config import ConfigReader
 from .rpc import Association, ContextManagerActivity, DceRpcProtocol, create_rpc_endpoint
-from .rt import RTProtocol, create_rt_endpoint
+from .rt import CycleCounter, RTProtocol, StaleCycleCounterError, create_rt_endpoint
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
 from .pnio_rpc import Alarm_High, Alarm_Low, IOCRBlockReq
 
@@ -24,9 +24,6 @@ from structlog.stdlib import BoundLogger
 
 LOGGER = structlog.stdlib.get_logger("profinet.controller")
 
-
-def cycle_count() -> int:
-    return int(asyncio.get_running_loop().time() * 32000)
 
 IOXS_CONTROLLER_BAD = PNIORealTime_IOxS(dataState=0, instance=3)
 
@@ -43,6 +40,12 @@ class Slot:
     subslots: dict[int, Subslot]
 
 
+@dataclass
+class Update:
+    input_cycle_count: CycleCounter | None
+    slots: dict[int, Slot]
+
+
 class ProfinetDevice:
     rt: RTProtocol
     rpc: DceRpcProtocol
@@ -52,6 +55,7 @@ class ProfinetDevice:
 
     aruuid: uuid.UUID
     session_key: int
+    last_input_cycle_count: CycleCounter | None
     slots: dict[int, Slot]
     connected: asyncio.Event
     _listeners: set[asyncio.Event]
@@ -167,14 +171,17 @@ class ProfinetDevice:
             l.set()
 
     @property
-    async def updates(self) -> AsyncGenerator[dict[int, Slot], None]:
+    async def updates(self) -> AsyncGenerator[Update, None]:
         e = asyncio.Event()
         self._listeners.add(e)
         try:
             while True:
                 await e.wait()
                 e.clear()
-                yield self.slots
+                yield Update(
+                    input_cycle_count=self.last_input_cycle_count,
+                    slots=self.slots,
+                )
         finally:
             self._listeners.remove(e)
 
@@ -224,10 +231,9 @@ class ProfinetDeviceConfig(ProfinetDevice):
         logger = self.logger.bind(frame_id=cr.FrameID)
         logger.info("starting cyclic data task every 0x%04x cycles", cycle_interval)
         while True:
-            now = cycle_count()
-            next_cycle_count = ((now // cycle_interval + 1) * cr.ReductionRatio + cr.Phase) * cr.SendClockFactor
-            logger.debug("tick", current_cycle_counter=now, next_cycle_counter=next_cycle_count)
-            await asyncio.sleep((next_cycle_count - now) / 32000)
+            next_cycle_count = CycleCounter.now().next_tick(phase=cr.Phase, reduction_ratio=cr.ReductionRatio, send_clock_factor=cr.SendClockFactor)
+            logger.debug("tick", next_cycle_counter=next_cycle_count)
+            await next_cycle_count
             data = bytearray(self.config.output_frame_size)
             for slot in self.config.slots:
                 for subslot in slot.subslots:
@@ -268,6 +274,11 @@ class ProfinetDeviceConfig(ProfinetDevice):
         )
         input_format, input_fields = self.config.input_struct
         def _handle_input_frame(frame: ProfinetIO):
+            try:
+                self.last_input_cycle_count = CycleCounter.from_rt(frame[PNIORealTimeCyclicPDU].cycleCounter, last=self.last_input_cycle_count)
+            except StaleCycleCounterError:
+                self.logger.warning("received packet with out-of-order cycle counter")
+                return
             data = frame[PNIORealTimeCyclicDefaultRawData].data
             values = struct.unpack_from(input_format, buffer=data)
             for (slot, subslot, name), value in zip(reversed(input_fields), reversed(values)):
