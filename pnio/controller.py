@@ -72,6 +72,7 @@ class ProfinetDevice:
 
         self.aruuid = uuid.uuid4()
         self.session_key = 1
+        self.last_input_cycle_count = None
         self.slots = {}
         self.connected = asyncio.Event()
         self._listeners = set()
