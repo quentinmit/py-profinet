@@ -78,7 +78,19 @@ class CycleCounter:
     def asyncio_time(self) -> float:
         if not self.wallclock:
             raise ValueError("attempting to await a cycle counter that didn't come from a wallclock")
+        return self.seconds
+
+    @property
+    def seconds(self) -> float:
         return self.value / CYCLE_COUNTER_HZ
+
+    def __sub__(self, other: Self | int) -> Self:
+        if isinstance(other, CycleCounter):
+            if self.wallclock != other.wallclock:
+                raise ValueError("can't subtract wallclock and non-wallclock counters")
+            return type(self)(value=(self.value-other.value), wallclock=False)
+
+        return type(self)(value=(self.value-other), wallclock=self.wallclock)
 
     def next_tick(self, phase: int, reduction_ratio: int, send_clock_factor: int) -> Self:
         return type(self)(
