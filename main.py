@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 import asyncio
 import argparse
@@ -5,15 +6,20 @@ import json
 import sys
 
 import aiomqtt
-from pnio.rt import CYCLE_COUNTER_HZ, CycleCounter
+from pint import Quantity, Unit, UnitRegistry
 from scapy.config import conf
 import structlog
 
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot, Update
+from pnio.rt import CYCLE_COUNTER_HZ, CycleCounter
 
 
 LOGGER = structlog.stdlib.get_logger()
+
+ureg = UnitRegistry()
+ureg.define(f"pniocycle = 1/{CYCLE_COUNTER_HZ} s")
+Q_ = ureg.Quantity
 
 
 def _inputs_to_json(slots: dict[int, Slot]) -> dict[int, dict[int, dict[str, int|None]]]:
@@ -38,6 +44,27 @@ def _outputs_to_json(slots: dict[int, Slot]) -> dict:
         } for i, slot in slots.items()
     }
 
+VOLTAGE_UNIT = 10 * ureg.mV
+CURRENT_UNIT = 100 * ureg.mA
+
+@dataclass
+class EnergyAccumulator:
+    # Energy is in units of 1 mW / 32000 Hz = 31.25 nJ
+    total_energy: Quantity|int = 0
+    # Charge is in units of 100 mA / 32000 Hz = 3.125 µC
+    total_charge: Quantity|int = 0
+
+    def for_json(self):
+        return {
+            "total_energy_joules": self.total_energy.to(ureg.J).m,
+            "total_charge_coulombs": self.total_charge.to(ureg.C).m,
+        }
+
+    def add(self, delta_t: Quantity, system_voltage: Quantity, current: Quantity):
+        self.total_energy += system_voltage * current * delta_t
+        self.total_charge += current * delta_t
+
+
 class Caparoc:
     config: ConfigReader
     device: ProfinetDevice
@@ -45,16 +72,16 @@ class Caparoc:
     last_cycle_count: CycleCounter | None
     total_cycles: CycleCounter
     # Energy counters are in units of 10 mV * 100 mA * 31.25 µs = 1 mW / 32000 Hz
-    total_system_energy: int
-    channel_total_energy: dict[tuple[int, int, int], int]
+    total_system_energy: EnergyAccumulator
+    channel_total_energy: dict[tuple[int, int, int], EnergyAccumulator]
 
     def __init__(self, config: ConfigReader, device: ProfinetDevice):
         self.config = config
         self.device = device
         self.last_cycle_count = None
         self.total_cycles = CycleCounter(0, False)
-        self.total_system_energy = 0
-        self.channel_total_energy = {k: 0 for k in self._actual_channels}
+        self.total_system_energy = EnergyAccumulator()
+        self.channel_total_energy = {k: EnergyAccumulator() for k in self._actual_channels}
 
     @property
     def _actual_channels(self) -> list[tuple[int, int, int]]:
@@ -165,35 +192,33 @@ class Caparoc:
                 delta_t = (update.input_cycle_count - self.last_cycle_count)
                 self.total_cycles += delta_t
 
+                delta_t = delta_t.value * ureg.pniocycle
                 # Units of 10 mV
                 system_voltage = update.slots[0].subslots[2].input_data["System input voltage"]
+                # Units of 100 mA
                 system_current = update.slots[0].subslots[2].input_data["Total system current"]
 
                 if system_voltage and system_current:
-                    self.total_system_energy += system_voltage * system_current * delta_t.value
+                    self.total_system_energy.add(delta_t, system_voltage * VOLTAGE_UNIT, system_current * CURRENT_UNIT)
 
                 for slot, subslot, channel in self._actual_channels:
                     channel_current = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} load current"]
                     if system_voltage and channel_current:
-                        self.channel_total_energy[slot, subslot, channel] += system_voltage * channel_current * delta_t.value
+                        self.channel_total_energy[slot, subslot, channel].add(delta_t, system_voltage * VOLTAGE_UNIT, channel_current * CURRENT_UNIT)
 
                 await self._publish(client)
         finally:
             self.last_cycle_count = update.input_cycle_count
 
     async def _publish(self, client: aiomqtt.Client):
-        energy_to_joules = 0.001 / CYCLE_COUNTER_HZ
-
         await client.publish(
             self.config.mqtt_topic("caparoc/inputs"),
             json.dumps(
                 {
                     "total_time": self.total_cycles.seconds,
-                    "total_system_energy_joules": self.total_system_energy * energy_to_joules,
+                    "total": self.total_system_energy.for_json(),
                 } | {
-                    f"{slot}_{subslot}_{channel}": {
-                        "total_energy_joules": self.channel_total_energy[slot, subslot, channel] * energy_to_joules,
-                    }
+                    f"{slot}_{subslot}_{channel}": self.channel_total_energy[slot, subslot, channel].for_json()
                     for slot, subslot, channel in self.channel_total_energy
                 }
             )
