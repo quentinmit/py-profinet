@@ -156,9 +156,6 @@ def setup_logging():
     formatter_processors = []
 
     if console:
-        shared_processors.extend([
-            structlog.processors.format_exc_info,
-        ])
         formatter_processors.extend([
             # Remove _record & _from_structlog.
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
