@@ -50,9 +50,9 @@ CURRENT_UNIT = 100 * ureg.mA
 @dataclass
 class EnergyAccumulator:
     # Energy is in units of 1 mW / 32000 Hz = 31.25 nJ
-    total_energy: Quantity|int = 0
+    total_energy: Quantity = 0 * VOLTAGE_UNIT * CURRENT_UNIT * ureg.pniocycle
     # Charge is in units of 100 mA / 32000 Hz = 3.125 µC
-    total_charge: Quantity|int = 0
+    total_charge: Quantity = 0 * CURRENT_UNIT * ureg.pniocycle
 
     def for_json(self):
         return {
