@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import asyncio
 import argparse
@@ -48,40 +48,81 @@ VOLTAGE_UNIT = 10 * ureg.mV
 CURRENT_UNIT = 100 * ureg.mA
 
 @dataclass
+class Accumulator:
+    total: Quantity
+    partial_total: Quantity
+    min: Quantity|None
+    max: Quantity|None
+
+    def __init__(self, unit: Unit):
+        self.total = 0 * unit * ureg.pniocycle
+        self.reset()
+
+    def reset(self):
+        self.partial_total = 0 * self.total.units
+        self.min = None
+        self.max = None
+
+    def add(self, value: Quantity, delta_t: Quantity):
+        self.total += delta_t * value
+        self.partial_total += delta_t * value
+        self.min = min(value, self.min or value)
+        self.max = max(value, self.max or value)
+
+@dataclass
 class EnergyAccumulator:
     # Time is in units of 1 / 32000 Hz
     total_time: Quantity = 0 * ureg.pniocycle
+    # delta_time is the time since the last call to for_json
+    delta_time: Quantity = 0 * ureg.pniocycle
     # Voltage-Time is in units of 10 mV / 32000 Hz
-    total_voltage_time: Quantity = 0 * ureg.V * ureg.pniocycle
+    voltage_time: Accumulator = field(default_factory=lambda: Accumulator(VOLTAGE_UNIT))
     # Energy is in units of 1 mW / 32000 Hz = 31.25 nJ
-    total_energy: Quantity = 0 * VOLTAGE_UNIT * CURRENT_UNIT * ureg.pniocycle
+    energy: Accumulator = field(default_factory=lambda: Accumulator(VOLTAGE_UNIT * CURRENT_UNIT))
     # Charge is in units of 100 mA / 32000 Hz = 3.125 µC
-    total_charge: Quantity = 0 * CURRENT_UNIT * ureg.pniocycle
+    charge: Accumulator = field(default_factory=lambda: Accumulator(CURRENT_UNIT))
 
     def for_json(self, include_system_voltage=False) -> dict[str, float]:
         out = {
             "total_time_seconds": self.total_time.to(ureg.s).m,
-            "total_energy_joules": self.total_energy.to(ureg.J).m,
-            "total_charge_coulombs": self.total_charge.to(ureg.C).m,
+            "delta_time_seconds": self.total_time.to(ureg.s).m,
+            "total_energy_joules": self.energy.total.to(ureg.J).m,
+            "total_charge_coulombs": self.charge.total.to(ureg.C).m,
         }
-        if self.total_time > 0:
+        if self.delta_time > 0:
             out |= {
-                # TODO: Averages should be since the last report
-                "average_power_watts": (self.total_energy / self.total_time).to(ureg.W).m,
-                "average_current_amps": (self.total_charge / self.total_time).to(ureg.A).m,
-                # TODO: Add min/max
+                "delta_time_seconds": self.delta_time.to(ureg.s).m,
+                "average_power_watts": (self.energy.partial_total / self.delta_time).to(ureg.W).m,
+                "average_current_amps": (self.charge.partial_total / self.delta_time).to(ureg.A).m,
+                "max_power_watts": self.energy.max.to(ureg.W).m,
+                "min_power_watts": self.energy.min.to(ureg.W).m,
+                "max_current_amps": self.charge.max.to(ureg.A).m,
+                "min_current_amps": self.charge.min.to(ureg.A).m,
             }
         if include_system_voltage:
             out |= {
-                "total_voltage_time_volt_seconds": self.total_voltage_time.to(ureg.V * ureg.s).m,
+                "total_voltage_time_volt_seconds": self.voltage_time.total.to(ureg.V * ureg.s).m,
             }
+            if self.delta_time > 0:
+                out |= {
+                    "average_voltage_volts": (self.voltage_time.partial_total / self.delta_time).to(ureg.V).m,
+                    "max_voltage_volts": self.voltage_time.max.to(ureg.V).m,
+                    "min_voltage_volts": self.voltage_time.min.to(ureg.V).m,
+                }
         return out
+
+    def reset(self):
+        self.delta_time = 0 * self.delta_time.units
+        self.voltage_time.reset()
+        self.energy.reset()
+        self.charge.reset()
 
     def add(self, delta_t: Quantity, system_voltage: Quantity, current: Quantity):
         self.total_time += delta_t
-        self.total_voltage_time += system_voltage * delta_t
-        self.total_energy += system_voltage * current * delta_t
-        self.total_charge += current * delta_t
+        self.delta_time += delta_t
+        self.voltage_time.add(system_voltage, delta_t)
+        self.energy.add(system_voltage * current, delta_t)
+        self.charge.add(current, delta_t)
 
 
 class Caparoc:
