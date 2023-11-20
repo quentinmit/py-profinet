@@ -126,10 +126,14 @@ class EnergyAccumulator:
         self.charge.add(current, delta_t)
 
 
+PUBLISH_INTERVAL = 1.0
+
+
 class Caparoc:
     config: ConfigReader
     device: ProfinetDevice
 
+    last_publish_time: float | None
     last_cycle_count: CycleCounter | None
     total_cycles: CycleCounter
     # Energy counters are in units of 10 mV * 100 mA * 31.25 µs = 1 mW / 32000 Hz
@@ -139,6 +143,7 @@ class Caparoc:
     def __init__(self, config: ConfigReader, device: ProfinetDevice):
         self.config = config
         self.device = device
+        self.last_publish_time = None
         self.last_cycle_count = None
         self.total_cycles = CycleCounter(0, False)
         self.total_system_energy = EnergyAccumulator()
@@ -267,7 +272,10 @@ class Caparoc:
                     if system_voltage and channel_current is not None:
                         self.channel_total_energy[slot, subslot, channel].add(delta_t, system_voltage * VOLTAGE_UNIT, channel_current * CURRENT_UNIT)
 
-                await self._publish(client)
+                now = asyncio.get_running_loop().time()
+                if not self.last_publish_time or (now - self.last_publish_time) > PUBLISH_INTERVAL:
+                    await self._publish(client)
+                    self.last_publish_time = now
         finally:
             self.last_cycle_count = update.input_cycle_count
 
