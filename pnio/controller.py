@@ -120,6 +120,7 @@ class ProfinetDevice:
                 yield assoc
             finally:
                 self.logger = self.logger.unbind("session_key")
+                self.last_input_cycle_count = None
                 # TODO: Technically the data isn't supposed to go bad until DataHoldFactor has elapsed
                 for slot in self.slots.values():
                     for subslot in slot.subslots.values():

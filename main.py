@@ -335,10 +335,14 @@ class ProfinetMqtt:
                         slot, subslot, field = message.topic.value.split("/")[-3:]
                         device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
         async def pnio2mqtt():
+            last_publish_time = asyncio.get_running_loop().time()
             async for update in device.updates:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots))))
-                    tg.create_task(client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True))
+                    now = asyncio.get_running_loop().time()
+                    if now - last_publish_time > 1.0 or update.input_cycle_count is None:
+                        tg.create_task(client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots))))
+                        tg.create_task(client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True))
+                        last_publish_time = now
                     for p in self.plugins:
                         tg.create_task(p.update(update, client))
         async with asyncio.TaskGroup() as tg:
