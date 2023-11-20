@@ -309,7 +309,10 @@ class ProfinetMqtt:
                 await client.subscribe(input_topic)
                 await client.subscribe(command_topic, qos=1)
                 async for message in messages:
-                    if message.topic.matches("homeassistant/status") and message.payload == b"online":
+                    if message.topic.matches("homeassistant/status"):
+                        # N.B. We're supposed to check for message.payload == b"online",
+                        # but there appears to be a race and sometimes the payload is b"offline"
+                        # even if HA is running.
                         LOGGER.info("received Home Assistant birth message; sending discovery messages")
                         # Home Assistant is (newly?) online, send discovery messages
                         for (domain, name), payload in self._get_discovery_messages().items():
