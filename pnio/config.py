@@ -195,11 +195,15 @@ class ConfigReader:
                 ModuleIdentNumber=slot.module.ident,
                 Submodules=expected_submodules,
             ))
+        # TODO: Allow separate timing for inputs and outputs?
+        reduction_ratio = self.config.get("reduction_ratio", 512)
+        send_clock_factor = self.config.get("send_clock_factor", 32)
         return [
             IOCRBlockReq(
                 IOCRProperties_RTClass=0x2,
                 IOCRType="InputCR",
-                ReductionRatio=512, # FIXME
+                ReductionRatio=reduction_ratio,
+                SendClockFactor=send_clock_factor,
                 WatchdogFactor=3, # FIXME
                 DataHoldFactor=3, # FIXME
                 DataLength=self.input_frame_size,
@@ -215,7 +219,8 @@ class ConfigReader:
             IOCRBlockReq(
                 IOCRProperties_RTClass=0x2,
                 IOCRType="OutputCR",
-                ReductionRatio=512, # FIXME
+                ReductionRatio=reduction_ratio,
+                SendClockFactor=send_clock_factor,
                 WatchdogFactor=3, # FIXME
                 DataHoldFactor=3, # FIXME
                 DataLength=self.output_frame_size,

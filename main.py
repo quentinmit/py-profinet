@@ -126,9 +126,6 @@ class EnergyAccumulator:
         self.charge.add(current, delta_t)
 
 
-PUBLISH_INTERVAL = 1.0
-
-
 class Caparoc:
     config: ConfigReader
     device: ProfinetDevice
@@ -273,7 +270,7 @@ class Caparoc:
                         self.channel_total_energy[slot, subslot, channel].add(delta_t, system_voltage * VOLTAGE_UNIT, channel_current * CURRENT_UNIT)
 
                 now = asyncio.get_running_loop().time()
-                if not self.last_publish_time or (now - self.last_publish_time) > PUBLISH_INTERVAL:
+                if not self.last_publish_time or (now - self.last_publish_time) > self.config.config["caparoc"].get("publish_interval", 1.0):
                     await self._publish(client)
                     self.last_publish_time = now
         finally:
