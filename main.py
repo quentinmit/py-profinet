@@ -109,6 +109,7 @@ class EnergyAccumulator:
                     "max_voltage_volts": self.voltage_time.max.to(ureg.V).m,
                     "min_voltage_volts": self.voltage_time.min.to(ureg.V).m,
                 }
+        self.reset()
         return out
 
     def reset(self):
@@ -258,12 +259,12 @@ class Caparoc:
                 # Units of 100 mA
                 system_current = update.slots[0].subslots[2].input_data["Total system current"]
 
-                if system_voltage and system_current:
+                if system_voltage is not None and system_current is not None:
                     self.total_system_energy.add(delta_t, system_voltage * VOLTAGE_UNIT, system_current * CURRENT_UNIT)
 
                 for slot, subslot, channel in self._actual_channels:
                     channel_current = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} load current"]
-                    if system_voltage and channel_current:
+                    if system_voltage and channel_current is not None:
                         self.channel_total_energy[slot, subslot, channel].add(delta_t, system_voltage * VOLTAGE_UNIT, channel_current * CURRENT_UNIT)
 
                 await self._publish(client)
