@@ -272,6 +272,8 @@ class Caparoc:
             return {
                 key: None if info is None else info & (1 << i) != 0
                 for i, key in enumerate(_BITS)
+            } | {
+                "nominal_current_amps": update.slots[slot].subslots[subslot].input_data[f"Channel {channel} nominal current"],
             }
         await client.publish(
             self.config.mqtt_topic("caparoc/inputs"),
