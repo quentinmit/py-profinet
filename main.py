@@ -157,7 +157,7 @@ class Caparoc:
         ])
 
     def get_discovery_messages(self) -> dict[tuple[str, str], dict]:
-        input_topic = self.config.mqtt_topic("inputs")
+        input_topic = self.config.mqtt_topic("caparoc/inputs")
         device_name = self.config.config["mqtt"]["device"]["name"]
         ha_device = {
             "connections": [
@@ -168,84 +168,73 @@ class Caparoc:
             "name": device_name,
         }
         out = {}
-        avail = (lambda vj_expr: [{
-            "topic": input_topic,
-            "value_template": "{%% if %s is none %%}offline{%% else %%}online{%% endif %%}" % (vj_expr),
-        }])
-        total_current = 'value_json["0"]["2"]["Total system current"]'
-        out[("sensor", "total_current")] = {
-            "availability": avail(total_current),
-            "device": ha_device,
-            "device_class": "current",
-            "state_class": "measurement",
-            "name": "Total system current",
-            "unique_id": "%s_total_current" % (device_name,),
-            "state_topic": input_topic,
-            "value_template": "{{ %s * 0.1 }}" % (total_current,),
-            "unit_of_measurement": "A",
-            "suggested_display_precision": 1,
-        }
-        input_voltage = 'value_json["0"]["2"]["System input voltage"]'
-        out[("sensor", "input_voltage")] = {
-            "availability": avail(input_voltage),
-            "device": ha_device,
-            "device_class": "voltage",
-            "state_class": "measurement",
-            "name": "System input voltage",
-            "unique_id": "%s_input_voltage" % (device_name,),
-            "state_topic": input_topic,
-            "value_template": "{{ %s * 0.01 }}" % (input_voltage,),
-            "unit_of_measurement": "V",
-            "suggested_display_precision": 2,
-        }
+        def entity(*path, **kwargs):
+            expr = 'value_json' + ''.join(f'["{v}"]' for v in path)
+            return {
+                "availability": [{
+                    "topic": input_topic,
+                    "value_template": "{%% if %s is none %%}offline{%% else %%}online{%% endif %%}" % (expr),
+                }],
+                "device": ha_device,
+                "state_topic": input_topic,
+                "value_template": "{{ %s }}" % (expr,),
+            } | kwargs
+        def sensor(*path, **kwargs):
+            kwargs = {
+                "state_class": "measurement",
+            } | kwargs
+            return entity(*path, **kwargs)
+        out[("sensor", "total_current")] = sensor(
+            "total", "average_current_amps",
+            device_class="current",
+            name="Total system current",
+            unique_id="%s_total_current" % (device_name,),
+            unit_of_measurement="A",
+            suggested_display_precision=1,
+        )
+        out[("sensor", "input_voltage")] = sensor(
+            "total", "average_voltage_volts",
+            device_class="voltage",
+            name="System input voltage",
+            unique_id="%s_input_voltage" % (device_name,),
+            unit_of_measurement="V",
+            suggested_display_precision=2,
+        )
         # TODO: Expose binary sensors for undervoltage, overvoltage, channel error, warning, total current shutdown
         for (channel_name, (slot, subslot, channel_number)) in zip(self.config.config["caparoc"]["channels"], self._actual_channels):
             if channel_name is None:
                 continue
-            vj = lambda tmpl: ('value_json["%d"]["%d"]["' + tmpl + '"]') % (slot, subslot, channel_number)
-            status_info = vj("Channel %d status information")
-            availability = avail(status_info)
             mqtt_key = "%d_%d_%d" % (slot, subslot, channel_number)
             unique_id = channel_name
-            out[("switch", mqtt_key)] = {
-                "availability": availability,
-                "command_topic": self.config.mqtt_topic("command/%d/%d/Control channel %d" % (slot, subslot, channel_number)),
-                "device": ha_device,
-                #"entity_category": "config",
-                "payload_on": "129",
-                "payload_off": "128",
-                "qos": 1,
-                "name": channel_name,
-                "unique_id": "%s_%s" % (device_name, unique_id),
-                "state_topic": input_topic,
-                "state_on": "True",
-                "state_off": "False",
-                "value_template": "{{ %s %% 2 != 0 }}" % (status_info,)
-            }
-            out[("sensor", f"{mqtt_key}_nominal_current")] = {
-                "availability": availability,
-                "device": ha_device,
-                "device_class": "current",
-                "entity_category": "diagnostic",
-                "name": "%s nominal current" % (channel_name,),
-                "unique_id": "%s_%s_nominal_current" % (device_name, unique_id),
-                "state_topic": input_topic,
-                "value_template": "{{ %s }}" % (vj("Channel %s nominal current"),),
-                "unit_of_measurement": "A",
-                "suggested_display_precision": 0,
-            }
-            out[("sensor", f"{mqtt_key}_load_current")] = {
-                "availability": availability,
-                "device": ha_device,
-                "device_class": "current",
-                "state_class": "measurement",
-                "name": "%s load current" % (channel_name,),
-                "unique_id": "%s_%s_load_current" % (device_name, unique_id),
-                "state_topic": input_topic,
-                "value_template": "{{ %s * 0.1 }}" % (vj("Channel %s load current"),),
-                "unit_of_measurement": "A",
-                "suggested_display_precision": 1,
-            }
+            out[("switch", mqtt_key)] = entity(
+                mqtt_key, "status",
+                command_topic=self.config.mqtt_topic("command/%d/%d/Control channel %d" % (slot, subslot, channel_number)),
+                #entity_category="config",
+                payload_on="129",
+                payload_off="128",
+                qos=1,
+                name=channel_name,
+                unique_id="%s_%s" % (device_name, unique_id),
+                state_on="True",
+                state_off="False",
+            )
+            out[("sensor", f"{mqtt_key}_nominal_current")] = sensor(
+                mqtt_key, "nominal_current_amps",
+                device_class="current",
+                entity_category="diagnostic",
+                name="%s nominal current" % (channel_name,),
+                unique_id="%s_%s_nominal_current" % (device_name, unique_id),
+                unit_of_measurement="A",
+                suggested_display_precision=0,
+            )
+            out[("sensor", f"{mqtt_key}_load_current")] = sensor(
+                mqtt_key, "average_current_amps",
+                device_class="current",
+                name="%s load current" % (channel_name,),
+                unique_id="%s_%s_load_current" % (device_name, unique_id),
+                unit_of_measurement="A",
+                suggested_display_precision=1,
+            )
             # TODO: Binary sensors for overload, short circuit, defect?
         return out
 
@@ -271,12 +260,19 @@ class Caparoc:
 
                 now = asyncio.get_running_loop().time()
                 if not self.last_publish_time or (now - self.last_publish_time) > self.config.config["caparoc"].get("publish_interval", 1.0):
-                    await self._publish(client)
+                    await self._publish(client, update)
                     self.last_publish_time = now
         finally:
             self.last_cycle_count = update.input_cycle_count
 
-    async def _publish(self, client: aiomqtt.Client):
+    async def _publish(self, client: aiomqtt.Client, update: Update):
+        _BITS = ["status", "current_over_80percent", "overload", "short_circuit", "defect"]
+        def channel_status(slot, subslot, channel):
+            info = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} status information"]
+            return {
+                key: None if info is None else info & (1 << i) != 0
+                for i, key in enumerate(_BITS)
+            }
         await client.publish(
             self.config.mqtt_topic("caparoc/inputs"),
             json.dumps(
@@ -284,7 +280,8 @@ class Caparoc:
                     "total_time": self.total_cycles.seconds,
                     "total": self.total_system_energy.for_json(include_system_voltage=True),
                 } | {
-                    f"{slot}_{subslot}_{channel}": self.channel_total_energy[slot, subslot, channel].for_json()
+                    f"{slot}_{subslot}_{channel}":
+                    self.channel_total_energy[slot, subslot, channel].for_json() | channel_status(slot, subslot, channel)
                     for slot, subslot, channel in self.channel_total_energy
                 }
             )
