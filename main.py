@@ -49,18 +49,37 @@ CURRENT_UNIT = 100 * ureg.mA
 
 @dataclass
 class EnergyAccumulator:
+    # Time is in units of 1 / 32000 Hz
+    total_time: Quantity = 0 * ureg.pniocycle
+    # Voltage-Time is in units of 10 mV / 32000 Hz
+    total_voltage_time: Quantity = 0 * ureg.V * ureg.pniocycle
     # Energy is in units of 1 mW / 32000 Hz = 31.25 nJ
     total_energy: Quantity = 0 * VOLTAGE_UNIT * CURRENT_UNIT * ureg.pniocycle
     # Charge is in units of 100 mA / 32000 Hz = 3.125 µC
     total_charge: Quantity = 0 * CURRENT_UNIT * ureg.pniocycle
 
-    def for_json(self):
-        return {
+    def for_json(self, include_system_voltage=False) -> dict[str, float]:
+        out = {
+            "total_time_seconds": self.total_time.to(ureg.s).m,
             "total_energy_joules": self.total_energy.to(ureg.J).m,
             "total_charge_coulombs": self.total_charge.to(ureg.C).m,
         }
+        if self.total_time > 0:
+            out |= {
+                # TODO: Averages should be since the last report
+                "average_power_watts": (self.total_energy / self.total_time).to(ureg.W).m,
+                "average_current_amps": (self.total_charge / self.total_time).to(ureg.A).m,
+                # TODO: Add min/max
+            }
+        if include_system_voltage:
+            out |= {
+                "total_voltage_time_volt_seconds": self.total_voltage_time.to(ureg.V * ureg.s).m,
+            }
+        return out
 
     def add(self, delta_t: Quantity, system_voltage: Quantity, current: Quantity):
+        self.total_time += delta_t
+        self.total_voltage_time += system_voltage * delta_t
         self.total_energy += system_voltage * current * delta_t
         self.total_charge += current * delta_t
 
@@ -216,7 +235,7 @@ class Caparoc:
             json.dumps(
                 {
                     "total_time": self.total_cycles.seconds,
-                    "total": self.total_system_energy.for_json(),
+                    "total": self.total_system_energy.for_json(include_system_voltage=True),
                 } | {
                     f"{slot}_{subslot}_{channel}": self.channel_total_energy[slot, subslot, channel].for_json()
                     for slot, subslot, channel in self.channel_total_energy
