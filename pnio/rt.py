@@ -120,6 +120,13 @@ class CycleCounter:
             h.cancel()
 
 
+@dataclass
+class call:
+    callable: Callable
+
+    def __str__(self):
+        return self.callable(dump=True)
+
 class RTProtocol(DatagramProtocol):
     src_mac: bytes
     pending_requests: dict[tuple[str, int], Queue]
@@ -196,7 +203,7 @@ class RTProtocol(DatagramProtocol):
 
     def send(self, pkt: Packet):
         pkt.sent_time = pkt.time = time.time()
-        self.logger.debug("sending packet", packet=pkt.show2(dump=True))
+        self.logger.debug("sending packet", packet=call(pkt.show2))
         if conf.debug_match:
             debug.sent.append(pkt)
         self.transport.sendto(bytes(pkt), (self.ifname, ETHERTYPE_PROFINET))
@@ -209,7 +216,7 @@ class RTProtocol(DatagramProtocol):
             self.logger.exception("failed to parse packet", bytes=data)
             return
         pkt.time = time.time()
-        self.logger.debug("received packet", packet=pkt.show2(dump=True))
+        self.logger.debug("received packet", packet=call(pkt.show))
         if conf.debug_match:
             debug.recv.append(pkt)
         # TODO: Do something with packet
