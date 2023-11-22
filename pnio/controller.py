@@ -259,7 +259,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                             0x80, # TODO: Use PNIORealTime_IOxS
                         )
 
-            logger.debug("output frame", data=hexdump(data, dump=1))
+            logger.debug("output frame", data=myhexdump(data))
             if self.mac:
                 self.rt.send_cyclic_data_frame(
                     data=data,
@@ -293,7 +293,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                     subslot.input_data[name] = value
                 else:
                     subslot.input_data[name] = None
-            self.logger.debug("input frame", bytes=hexdump(data, dump=1), data=self.slots)
+            self.logger.debug("input frame", bytes=myhexdump(data), data=self.slots)
             self._signal_update()
         for frame_id in assoc.input_frame_ids:
             self.rt.register_frame_handler(frame_id, _handle_input_frame)
@@ -347,3 +347,11 @@ async def create_profinet_interface(ifname: str) -> ProfinetInterface:
     rt = await create_rt_endpoint(ifname)
     rpc = await create_rpc_endpoint()
     return ProfinetInterface(rt=rt, rpc=rpc)
+
+
+@dataclass
+class myhexdump:
+    data: bytes
+
+    def __str__(self):
+        return hexdump(self.data, dump=1)
