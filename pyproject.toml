@@ -1,0 +1,19 @@
+[build-system]
+requires = ["flit_core >= 3.4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "py-profinet"
+version = "0.0.1"
+authors = [
+ { name = "Quentin Smith", email = "quentin@mit.edu" },
+]
+requires-python = ">=3.11"
+dependencies = [
+ "scapy",
+ "pyyaml",
+ "aiomqtt",
+ "async-timeout",
+ "structlog",
+ "influxdb_client[async]",
+]
