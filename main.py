@@ -3,12 +3,18 @@ import logging
 import asyncio
 import argparse
 import json
+import os
 import sys
+import time
 
+from aiohttp_retry import ExponentialRetry, RetryClient
 import aiomqtt
 from pint import Quantity, Unit, UnitRegistry
 from scapy.config import conf
 import structlog
+from influxdb_client import Point, WritePrecision
+from influxdb_client.client.exceptions import InfluxDBError
+from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 
 from pnio.config import ConfigReader
 from pnio.controller import ProfinetDevice, ProfinetInterface, Slot, Update
@@ -85,7 +91,6 @@ class EnergyAccumulator:
     def for_json(self, include_system_voltage=False) -> dict[str, float]:
         out = {
             "total_time_seconds": self.total_time.to(ureg.s).m,
-            "delta_time_seconds": self.total_time.to(ureg.s).m,
             "total_energy_joules": self.energy.total.to(ureg.J).m,
             "total_charge_coulombs": self.charge.total.to(ureg.C).m,
         }
@@ -238,7 +243,7 @@ class Caparoc:
             # TODO: Binary sensors for overload, short circuit, defect?
         return out
 
-    async def update(self, update: Update, client: aiomqtt.Client):
+    async def update(self, update: Update, client: aiomqtt.Client, influxdb_queue: asyncio.Queue):
         try:
             if self.last_cycle_count and update.input_cycle_count:
                 delta_t = (update.input_cycle_count - self.last_cycle_count)
@@ -260,12 +265,12 @@ class Caparoc:
 
                 now = asyncio.get_running_loop().time()
                 if not self.last_publish_time or (now - self.last_publish_time) > self.config.config["caparoc"].get("publish_interval", 1.0):
-                    await self._publish(client, update)
+                    await self._publish(client, influxdb_queue, update)
                     self.last_publish_time = now
         finally:
             self.last_cycle_count = update.input_cycle_count
 
-    async def _publish(self, client: aiomqtt.Client, update: Update):
+    def _state_to_json(self, update: Update):
         _BITS = ["status", "current_over_80percent", "overload", "short_circuit", "defect"]
         def channel_status(slot, subslot, channel):
             info = update.slots[slot].subslots[subslot].input_data[f"Channel {channel} status information"]
@@ -275,19 +280,35 @@ class Caparoc:
             } | {
                 "nominal_current_amps": update.slots[slot].subslots[subslot].input_data[f"Channel {channel} nominal current"],
             }
+        return ({
+            "total": self.total_system_energy.for_json(include_system_voltage=True) | {
+                "total_cycles": self.total_cycles.value,
+            },
+        } | {
+            f"{slot}_{subslot}_{channel}":
+            self.channel_total_energy[slot, subslot, channel].for_json() | channel_status(slot, subslot, channel)
+            for slot, subslot, channel in self.channel_total_energy
+        })
+
+    async def _publish(self, client: aiomqtt.Client, influxdb_queue: asyncio.Queue, update: Update):
+        j = self._state_to_json(update)
         await client.publish(
             self.config.mqtt_topic("caparoc/inputs"),
             json.dumps(
-                {
-                    "total_time": self.total_cycles.seconds,
-                    "total": self.total_system_energy.for_json(include_system_voltage=True),
-                } | {
-                    f"{slot}_{subslot}_{channel}":
-                    self.channel_total_energy[slot, subslot, channel].for_json() | channel_status(slot, subslot, channel)
-                    for slot, subslot, channel in self.channel_total_energy
-                }
+                j
             )
         )
+        now = int(time.time() * 1e9)
+        points = []
+        for channel, values in j.items():
+            p = Point("caparoc").tag("channel", channel).tag("name_of_station", self.config.config["name_of_station"]).time(now, WritePrecision.NS)
+            for k, v in values.items():
+                p.field(k, v)
+            points.append(p)
+        if influxdb_queue.full():
+            # If the queue is full, pop the oldest batch so we prefer more recent points
+            influxdb_queue.get_nowait()
+        influxdb_queue.put_nowait(points)
 
 class ProfinetMqtt:
     def __init__(self, config: ConfigReader):
@@ -351,20 +372,49 @@ class ProfinetMqtt:
             tg.create_task(mqtt2pnio())
             tg.create_task(pnio2mqtt())
 
+    async def _run_influxdb(self, queue: asyncio.Queue):
+        try:
+            host = os.environ["INFLUX_HOST"]
+            token = os.environ["INFLUX_TOKEN"]
+            org = os.environ["INFLUX_ORG"]
+            bucket = os.environ["INFLUX_BUCKET"]
+        except KeyError:
+            LOGGER.warning("not writing to influxdb; environment variable missing", exc_info=True)
+            while True:
+                await queue.get()
+                queue.task_done()
+        async with InfluxDBClientAsync(
+                url=host, token=token, org=org,
+                client_session_type=RetryClient,
+                client_session_kwargs={"retry_options": ExponentialRetry(attempts=3)},
+        ) as client:
+            write_api = client.write_api()
+            while True:
+                batch = await queue.get()
+                try:
+                    await write_api.write(bucket=bucket, record=batch)
+                except InfluxDBError:
+                    LOGGER.exception("failed writing point")
+                finally:
+                    queue.task_done()
     async def run(self):
         interface = await ProfinetInterface.from_config(self.config)
 
-        async with interface.open_device_from_config(self.config) as device:
-            self.plugins = []
-            if "caparoc" in self.config.config:
-                self.plugins.append(Caparoc(self.config, device))
-            while True:
-                try:
-                    async with aiomqtt.Client(self.config.mqtt_server) as mqtt_client:
-                        await self._run_once(device, mqtt_client)
-                except aiomqtt.MqttError:
-                    LOGGER.exception("mqtt connection lost; reconnecting")
-                    await asyncio.sleep(1)
+        influxdb_queue = asyncio.Queue()
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self._run_influxdb(influxdb_queue))
+
+            async with interface.open_device_from_config(self.config) as device:
+                self.plugins = []
+                if "caparoc" in self.config.config:
+                    self.plugins.append(Caparoc(self.config, device))
+                while True:
+                    try:
+                        async with aiomqtt.Client(self.config.mqtt_server) as mqtt_client:
+                            await self._run_once(device, mqtt_client)
+                    except aiomqtt.MqttError:
+                        LOGGER.exception("mqtt connection lost; reconnecting")
+                        await asyncio.sleep(1)
 
 def setup_logging():
     console = sys.stderr.isatty()
