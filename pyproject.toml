@@ -16,4 +16,6 @@ dependencies = [
  "async-timeout",
  "structlog",
  "influxdb_client[async]",
+ "Pint",
+ "aiohttp-retry",
 ]
