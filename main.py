@@ -134,6 +134,7 @@ class EnergyAccumulator:
 class Caparoc:
     config: ConfigReader
     device: ProfinetDevice
+    influxdb_queue: asyncio.Queue
 
     last_publish_time: float | None
     last_cycle_count: CycleCounter | None
@@ -142,9 +143,11 @@ class Caparoc:
     total_system_energy: EnergyAccumulator
     channel_total_energy: dict[tuple[int, int, int], EnergyAccumulator]
 
-    def __init__(self, config: ConfigReader, device: ProfinetDevice):
+    def __init__(self, config: ConfigReader, device: ProfinetDevice, influxdb_queue: asyncio.Queue):
         self.config = config
         self.device = device
+        self.influxdb_queue = influxdb_queue
+
         self.last_publish_time = None
         self.last_cycle_count = None
         self.total_cycles = CycleCounter(0, False)
@@ -243,7 +246,7 @@ class Caparoc:
             # TODO: Binary sensors for overload, short circuit, defect?
         return out
 
-    async def update(self, update: Update, client: aiomqtt.Client, influxdb_queue: asyncio.Queue):
+    async def update(self, update: Update, client: aiomqtt.Client):
         try:
             if self.last_cycle_count and update.input_cycle_count:
                 delta_t = (update.input_cycle_count - self.last_cycle_count)
@@ -265,7 +268,7 @@ class Caparoc:
 
                 now = asyncio.get_running_loop().time()
                 if not self.last_publish_time or (now - self.last_publish_time) > self.config.config["caparoc"].get("publish_interval", 1.0):
-                    await self._publish(client, influxdb_queue, update)
+                    await self._publish(client, update)
                     self.last_publish_time = now
         finally:
             self.last_cycle_count = update.input_cycle_count
@@ -290,7 +293,7 @@ class Caparoc:
             for slot, subslot, channel in self.channel_total_energy
         })
 
-    async def _publish(self, client: aiomqtt.Client, influxdb_queue: asyncio.Queue, update: Update):
+    async def _publish(self, client: aiomqtt.Client, update: Update):
         j = self._state_to_json(update)
         await client.publish(
             self.config.mqtt_topic("caparoc/inputs"),
@@ -305,10 +308,10 @@ class Caparoc:
             for k, v in values.items():
                 p.field(k, v)
             points.append(p)
-        if influxdb_queue.full():
+        if self.influxdb_queue.full():
             # If the queue is full, pop the oldest batch so we prefer more recent points
-            influxdb_queue.get_nowait()
-        influxdb_queue.put_nowait(points)
+            self.influxdb_queue.get_nowait()
+        self.influxdb_queue.put_nowait(points)
 
 class ProfinetMqtt:
     def __init__(self, config: ConfigReader):
@@ -407,7 +410,7 @@ class ProfinetMqtt:
             async with interface.open_device_from_config(self.config) as device:
                 self.plugins = []
                 if "caparoc" in self.config.config:
-                    self.plugins.append(Caparoc(self.config, device))
+                    self.plugins.append(Caparoc(self.config, device, influxdb_queue))
                 while True:
                     try:
                         async with aiomqtt.Client(self.config.mqtt_server) as mqtt_client:
