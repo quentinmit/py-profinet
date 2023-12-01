@@ -9,7 +9,10 @@ version = "0.0.1"
 authors = [
  { name = "Quentin Smith", email = "quentin@mit.edu" },
 ]
-license = "GPL-2.0-or-later"
+license = { file = "COPYING" }
+classifiers = [
+ "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)"
+]
 requires-python = ">=3.11"
 dependencies = [
  "scapy",
@@ -21,6 +24,9 @@ dependencies = [
  "Pint",
  "aiohttp-retry",
 ]
+
+[project.scripts]
+pnio2mqtt = "pnio2mqtt:main"
 
 [tool.flit.module]
 name = "pnio"

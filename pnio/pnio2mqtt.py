@@ -474,7 +474,7 @@ def setup_logging():
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
 
-async def main():
+async def async_main():
     parser = argparse.ArgumentParser()
     parser.add_argument('filename')
     parser.add_argument('-v', '--verbose', action='count', default=0)
@@ -490,6 +490,9 @@ async def main():
 
     await ProfinetMqtt(config).run()
 
-if __name__ == "__main__":
+def main():
     setup_logging()
-    asyncio.run(main())
+    asyncio.run(async_main())
+
+if __name__ == "__main__":
+    main()
