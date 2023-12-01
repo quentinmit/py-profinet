@@ -4,10 +4,12 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "py-profinet"
+description = "Profinet Controller implemented in Python"
 version = "0.0.1"
 authors = [
  { name = "Quentin Smith", email = "quentin@mit.edu" },
 ]
+license = "GPL-2.0-or-later"
 requires-python = ">=3.11"
 dependencies = [
  "scapy",
@@ -19,3 +21,6 @@ dependencies = [
  "Pint",
  "aiohttp-retry",
 ]
+
+[tool.flit.module]
+name = "pnio"
