@@ -1,4 +1,7 @@
 { lib
+, stdenv
+, iana-etc
+, libredirect
 , python311
 , fetchFromGitHub
 }:
@@ -26,6 +29,15 @@ python311.pkgs.buildPythonApplication rec {
   ];
 
   pythonImportsCheck = [ "pnio.controller" ];
+
+  # https://nixos.wiki/wiki/Packaging/Quirks_and_Caveats#Test_cannot_access_.2Fetc.2Fprotocols.2C_.2Fetc.2Fservices_or_expects_a_special_.2Fetc.2Fpasswd_when_building_in_sandbox
+  preInstallCheck = lib.optionalString stdenv.isLinux ''
+    export NIX_REDIRECTS=/etc/services=${iana-etc}/etc/services \
+      LD_PRELOAD=${libredirect}/lib/libredirect.so
+  '';
+  exitHook = lib.optionalString stdenv.isLinux ''
+    unset NIX_REDIRECTS LD_PRELOAD
+  '';
 
   meta = with lib; {
     description = "This repository aims to simulate a Profinet-Controller. Based on a GSDML file the connection is established and cyclic messages are exchanged";
