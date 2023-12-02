@@ -88,6 +88,8 @@ class ConfigReader:
             output_frame_offset += n
             return out
         for slot, module in sorted(self.config["slots"].items()):
+            if not isinstance(slot, int):
+                slot = int(slot, 0)
             g_module = self.gsdml.get_module(module["id"])
             if not g_module:
                 raise ValueError("Couldn't find module 0x%04x" % (module["id"]))
@@ -103,6 +105,8 @@ class ConfigReader:
                         "parameters": module.get("parameters", {}),
                     },
             }).items()):
+                if not isinstance(subslot, int):
+                    subslot = int(subslot, 0)
                 g_submodule = g_module.get_submodule(submodule["id"])
                 if not g_submodule:
                     raise ValueError("Couldn't find submodule 0x%04x" % (submodule["id"]))
