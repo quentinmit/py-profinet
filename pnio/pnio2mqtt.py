@@ -448,7 +448,7 @@ def setup_logging():
         ])
     else:
         formatter_processors.extend([
-            structlog.PrintLogger(file=sys.stderr)
+            structlog.processors.KeyValueRenderer(),
         ])
 
     structlog.configure(
