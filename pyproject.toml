@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pnio2mqtt = "pnio2mqtt:main"
+pnio2mqtt = "pnio.pnio2mqtt:main"
 
 [tool.flit.module]
 name = "pnio"
