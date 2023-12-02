@@ -448,6 +448,7 @@ def setup_logging():
         ])
     else:
         formatter_processors.extend([
+            structlog.processors.ExceptionRenderer(),
             structlog.processors.KeyValueRenderer(),
         ])
 
