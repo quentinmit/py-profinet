@@ -303,8 +303,13 @@ class Caparoc:
         )
         now = int(time.time() * 1e9)
         points = []
-        for channel, values in j.items():
+        channel_names = iter(self.config.config["caparoc"]["channels"])
+        for channel, values in sorted(j.items()):
             p = Point("caparoc").tag("channel", channel).tag("name_of_station", self.config.config["name_of_station"]).time(now, WritePrecision.NS)
+            if channel != "total":
+                name = next(channel_names)
+                if name:
+                    p.tag("channel_name", name)
             for k, v in values.items():
                 p.field(k, v)
             points.append(p)
