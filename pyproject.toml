@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 dependencies = [
  "scapy",
  "pyyaml",
- "aiomqtt",
+ "aiomqtt>=2.0.0",
  "async-timeout",
  "structlog",
  "influxdb_client[async]",

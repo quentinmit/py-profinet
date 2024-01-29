@@ -334,37 +334,36 @@ class ProfinetMqtt:
         input_topic = self.config.mqtt_topic("inputs")
         command_topic = self.config.mqtt_topic("command/#")
         async def mqtt2pnio():
-            async with client.messages() as messages:
-                await client.subscribe("homeassistant/status")
-                await client.subscribe(output_topic)
-                await client.subscribe(input_topic)
-                await client.subscribe(command_topic, qos=1)
-                async for message in messages:
-                    if message.topic.matches("homeassistant/status"):
-                        # N.B. We're supposed to check for message.payload == b"online",
-                        # but there appears to be a race and sometimes the payload is b"offline"
-                        # even if HA is running.
-                        LOGGER.info("received Home Assistant birth message; sending discovery messages")
-                        # Home Assistant is (newly?) online, send discovery messages
-                        for (domain, name), payload in self._get_discovery_messages().items():
-                            await client.publish(
-                                "homeassistant/%s/%s/%s/config" % (
-                                    domain,
-                                    self.config.config["name_of_station"],
-                                    name,
-                                ),
-                                payload=json.dumps(payload),
-                            )
-                    if message.topic.matches(output_topic) and message.retain:
-                        # Reload initial output state from MQTT
-                        data = json.loads(message.payload)
-                        for slot, subslots in data.items():
-                            for subslot, fields in subslots.items():
-                                for k, v in fields.items():
-                                    device.slots[int(slot)].subslots[int(subslot)].output_data[k] = v
-                    if message.topic.matches(command_topic):
-                        slot, subslot, field = message.topic.value.split("/")[-3:]
-                        device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
+            await client.subscribe("homeassistant/status")
+            await client.subscribe(output_topic)
+            await client.subscribe(input_topic)
+            await client.subscribe(command_topic, qos=1)
+            async for message in client.messages:
+                if message.topic.matches("homeassistant/status"):
+                    # N.B. We're supposed to check for message.payload == b"online",
+                    # but there appears to be a race and sometimes the payload is b"offline"
+                    # even if HA is running.
+                    LOGGER.info("received Home Assistant birth message; sending discovery messages")
+                    # Home Assistant is (newly?) online, send discovery messages
+                    for (domain, name), payload in self._get_discovery_messages().items():
+                        await client.publish(
+                            "homeassistant/%s/%s/%s/config" % (
+                                domain,
+                                self.config.config["name_of_station"],
+                                name,
+                            ),
+                            payload=json.dumps(payload),
+                        )
+                if message.topic.matches(output_topic) and message.retain:
+                    # Reload initial output state from MQTT
+                    data = json.loads(message.payload)
+                    for slot, subslots in data.items():
+                        for subslot, fields in subslots.items():
+                            for k, v in fields.items():
+                                device.slots[int(slot)].subslots[int(subslot)].output_data[k] = v
+                if message.topic.matches(command_topic):
+                    slot, subslot, field = message.topic.value.split("/")[-3:]
+                    device.slots[int(slot)].subslots[int(subslot)].output_data[field] = json.loads(message.payload)
         async def pnio2mqtt():
             last_publish_time = asyncio.get_running_loop().time()
             async for update in device.updates:
