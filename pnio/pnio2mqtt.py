@@ -380,7 +380,7 @@ class ProfinetMqtt:
             tg.create_task(mqtt2pnio())
             tg.create_task(pnio2mqtt())
 
-    async def _run_influxdb(self, queue: asyncio.Queue):
+    async def _run_influxdb_connection(self, queue: asyncio.Queue):
         try:
             host = os.environ["INFLUX_HOST"]
             token = os.environ["INFLUX_TOKEN"]
@@ -405,12 +405,21 @@ class ProfinetMqtt:
                     LOGGER.exception("failed writing point")
                 finally:
                     queue.task_done()
+
+    async def _run_influxdb_task(self, queue: asyncio.Queue):
+        while True:
+            try:
+                await self._run_influxdb_connection(queue)
+            except Exception:
+                LOGGER.exception("influxdb connection list; reconnecting")
+            await asyncio.sleep(1)
+
     async def run(self):
         interface = await ProfinetInterface.from_config(self.config)
 
         influxdb_queue = asyncio.Queue()
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._run_influxdb(influxdb_queue))
+            tg.create_task(self._run_influxdb_task(influxdb_queue))
 
             async with interface.open_device_from_config(self.config) as device:
                 self.plugins = []
