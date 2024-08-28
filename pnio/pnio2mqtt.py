@@ -370,8 +370,8 @@ class ProfinetMqtt:
                 async with asyncio.TaskGroup() as tg:
                     now = asyncio.get_running_loop().time()
                     if now - last_publish_time > 1.0 or update.input_cycle_count is None:
-                        tg.create_task(client.publish("workshop/power/inputs", payload=json.dumps(_inputs_to_json(update.slots))))
-                        tg.create_task(client.publish("workshop/power/outputs", payload=json.dumps(_outputs_to_json(device.slots)), retain=True))
+                        tg.create_task(client.publish(input_topic, payload=json.dumps(_inputs_to_json(update.slots))))
+                        tg.create_task(client.publish(output_topic, payload=json.dumps(_outputs_to_json(device.slots)), retain=True))
                         last_publish_time = now
                     for p in self.plugins:
                         tg.create_task(p.update(update, client))
