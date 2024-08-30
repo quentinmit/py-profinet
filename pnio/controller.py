@@ -289,7 +289,7 @@ class ProfinetDeviceConfig(ProfinetDevice):
                     subslot.input_iops = PNIORealTime_IOxS(bytes([value]))
                 elif name == "IOCS":
                     subslot.output_iocs = PNIORealTime_IOxS(bytes([value]))
-                elif subslot.input_iops.dataState == 1:
+                elif subslot.input_iops.dataState == 1 or self.config.ignore_iops:
                     subslot.input_data[name] = value
                 else:
                     subslot.input_data[name] = None

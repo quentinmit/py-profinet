@@ -287,3 +287,7 @@ class ConfigReader:
 
     def mqtt_topic(self, type: str) -> str:
         return "%s/%s" % (self.config["mqtt"]["topic_prefix"], type)
+
+    @property
+    def ignore_iops(self) -> bool:
+        return self.config.get("ignore_iops", False)
