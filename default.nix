@@ -34,6 +34,8 @@ python311.pkgs.buildPythonApplication rec {
   preInstallCheck = lib.optionalString stdenv.isLinux ''
     export NIX_REDIRECTS=/etc/services=${iana-etc}/etc/services \
       LD_PRELOAD=${libredirect}/lib/libredirect.so
+    mkdir -p /tmp/xdg_cache /tmp/xdg_config
+    export XDG_CONFIG_HOME=/tmp/xdg_config XDG_CACHE_HOME=/tmp/xdg_cache
   '';
   exitHook = lib.optionalString stdenv.isLinux ''
     unset NIX_REDIRECTS LD_PRELOAD
