@@ -451,18 +451,19 @@ def setup_logging():
         ),
     ]
 
-    formatter_processors = []
+    formatter_processors = [
+        # Remove _record & _from_structlog.
+        structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+    ]
 
     if console:
         formatter_processors.extend([
-            # Remove _record & _from_structlog.
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.dev.ConsoleRenderer(),
         ])
     else:
         formatter_processors.extend([
             structlog.processors.ExceptionRenderer(),
-            structlog.processors.KeyValueRenderer(),
+            structlog.processors.LogfmtRenderer(),
         ])
 
     structlog.configure(
