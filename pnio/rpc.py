@@ -6,10 +6,14 @@ import enum
 import logging
 import time
 import socket
+import sys
 import uuid
 from typing import Any, Optional, Tuple
 
-import async_timeout
+if sys.version_info >= (3, 11):
+    from asyncio import timeout as atimeout
+else:
+    from async_timeout import timeout as atimeout
 from scapy.packet import Packet
 from scapy.plist import PacketList
 from scapy.layers.dcerpc import DceRpc4, _DCE_RPC_ERROR_CODES
@@ -123,7 +127,7 @@ class DceRpcProtocol(DatagramProtocol):
         try:
             self.pending_requests[(req.act_id, req.seqnum)] = fut
             self.send(req, dst_addr)
-            with async_timeout.timeout(timeout):
+            async with atimeout(timeout):
                 # TODO: Retries
                 res = await fut
         finally:

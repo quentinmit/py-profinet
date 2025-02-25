@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import struct
+import sys
 from typing import Optional
 import uuid
 
@@ -15,7 +16,10 @@ from .rt import CycleCounter, RTProtocol, StaleCycleCounterError, create_rt_endp
 from .pnio_dcp import DeviceInstanceBlock, IPParameterBlock, DeviceIDBlock
 from .pnio_rpc import Alarm_High, Alarm_Low, IOCRBlockReq
 
-from async_timeout import timeout
+if sys.version_info >= (3, 11):
+    from asyncio import timeout
+else:
+    from async_timeout import timeout
 from scapy.layers.l2 import Ether
 from scapy.utils import hexdump
 import structlog
@@ -86,7 +90,7 @@ class ProfinetDevice:
         self.logger.info("looking for station")
         # Locate device with DCP
         # TODO: Retries?
-        with timeout(1.5):
+        async with timeout(1.5):
             pkt = await self.rt.dcp_identify(self.name_of_station)
         mac = pkt[Ether].src
         # TODO: Set the IP if it's not already set correctly.
@@ -139,7 +143,7 @@ class ProfinetDevice:
                     try:
                         async with timeout(watchdog_time) as t:
                             async for update in self.updates:
-                                t.update(asyncio.get_running_loop().time() + watchdog_time)
+                                t.reschedule(asyncio.get_running_loop().time() + watchdog_time)
                     except TimeoutError:
                         self.logger.error("no data received, reconnecting", timeout=watchdog_time)
                     finally:
