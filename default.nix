@@ -2,11 +2,11 @@
 , stdenv
 , iana-etc
 , libredirect
-, python311
+, python312
 , fetchFromGitHub
 }:
 
-python311.pkgs.buildPythonApplication rec {
+python312.pkgs.buildPythonApplication rec {
   pname = "py-profinet";
   version = "unstable-2023-11-27";
   pyproject = true;
@@ -14,10 +14,10 @@ python311.pkgs.buildPythonApplication rec {
   src = ./.;
 
   nativeBuildInputs = [
-    python311.pkgs.flit-core
+    python312.pkgs.flit-core
   ];
 
-  propagatedBuildInputs = with python311.pkgs; [
+  propagatedBuildInputs = with python312.pkgs; [
     aiohttp-retry
     aiomqtt
     async-timeout
