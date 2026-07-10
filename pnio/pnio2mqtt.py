@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from typing import Iterable, Self
 
 from aiohttp_retry import ExponentialRetry, RetryClient
 import aiomqtt
@@ -131,10 +132,55 @@ class EnergyAccumulator:
         self.charge.add(current, delta_t)
 
 
+class InfluxPublisher:
+    def __init__(self, host, org, bucket, token):
+        self.host = host
+        self.org = org
+        self.bucket = bucket
+        self.token = os.path.expandvars(token)
+        self.queue = asyncio.Queue()
+
+        self.logger = LOGGER.bind(influxdb_host=self.host)
+
+    @classmethod
+    def from_config(cls, config: dict) -> Self:
+        return cls(**config)
+
+    async def run(self):
+        while True:
+            try:
+                await self._run_connection()
+            except Exception:
+                self.logger.exception("influxdb connection lost; reconnecting")
+            await asyncio.sleep(1)
+
+    async def _run_connection(self):
+        async with InfluxDBClientAsync(
+                url=self.host, token=self.token, org=self.org,
+                client_session_type=RetryClient,
+                client_session_kwargs={"retry_options": ExponentialRetry(attempts=3)},
+        ) as client:
+            write_api = client.write_api()
+            while True:
+                batch = await self.queue.get()
+                try:
+                    await write_api.write(bucket=self.bucket, record=batch)
+                except InfluxDBError:
+                    self.logger.exception("failed writing point")
+                finally:
+                    self.queue.task_done()
+
+    def publish(self, points: Iterable[Point]):
+        if self.queue.full():
+            # If the queue is full, pop the oldest batch so we prefer more recent points
+            self.queue.get_nowait()
+        self.queue.put_nowait(points)
+
+
 class Caparoc:
     config: ConfigReader
     device: ProfinetDevice
-    influxdb_queue: asyncio.Queue
+    influxdb_publishers: Iterable[InfluxPublisher]
 
     last_publish_time: float | None
     last_cycle_count: CycleCounter | None
@@ -143,10 +189,10 @@ class Caparoc:
     total_system_energy: EnergyAccumulator
     channel_total_energy: dict[tuple[int, int, int], EnergyAccumulator]
 
-    def __init__(self, config: ConfigReader, device: ProfinetDevice, influxdb_queue: asyncio.Queue):
+    def __init__(self, config: ConfigReader, device: ProfinetDevice, influxdb_publishers: Iterable[InfluxPublisher]):
         self.config = config
         self.device = device
-        self.influxdb_queue = influxdb_queue
+        self.influxdb_publishers = influxdb_publishers
 
         self.last_publish_time = None
         self.last_cycle_count = None
@@ -313,10 +359,9 @@ class Caparoc:
             for k, v in values.items():
                 p.field(k, v)
             points.append(p)
-        if self.influxdb_queue.full():
-            # If the queue is full, pop the oldest batch so we prefer more recent points
-            self.influxdb_queue.get_nowait()
-        self.influxdb_queue.put_nowait(points)
+        for publisher in self.influxdb_publishers:
+            publisher.publish(points)
+
 
 class ProfinetMqtt:
     def __init__(self, config: ConfigReader):
@@ -379,51 +424,19 @@ class ProfinetMqtt:
             tg.create_task(mqtt2pnio())
             tg.create_task(pnio2mqtt())
 
-    async def _run_influxdb_connection(self, queue: asyncio.Queue):
-        try:
-            host = os.environ["INFLUX_HOST"]
-            token = os.environ["INFLUX_TOKEN"]
-            org = os.environ["INFLUX_ORG"]
-            bucket = os.environ["INFLUX_BUCKET"]
-        except KeyError:
-            LOGGER.warning("not writing to influxdb; environment variable missing", exc_info=True)
-            while True:
-                await queue.get()
-                queue.task_done()
-        async with InfluxDBClientAsync(
-                url=host, token=token, org=org,
-                client_session_type=RetryClient,
-                client_session_kwargs={"retry_options": ExponentialRetry(attempts=3)},
-        ) as client:
-            write_api = client.write_api()
-            while True:
-                batch = await queue.get()
-                try:
-                    await write_api.write(bucket=bucket, record=batch)
-                except InfluxDBError:
-                    LOGGER.exception("failed writing point")
-                finally:
-                    queue.task_done()
-
-    async def _run_influxdb_task(self, queue: asyncio.Queue):
-        while True:
-            try:
-                await self._run_influxdb_connection(queue)
-            except Exception:
-                LOGGER.exception("influxdb connection list; reconnecting")
-            await asyncio.sleep(1)
-
     async def run(self):
         interface = await ProfinetInterface.from_config(self.config)
 
-        influxdb_queue = asyncio.Queue()
+        influxdb_publishers = [InfluxPublisher.from_config(c) for c in self.config.config.get("influxdb", [])]
+
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._run_influxdb_task(influxdb_queue))
+            for p in influxdb_publishers:
+                tg.create_task(p.run())
 
             async with interface.open_device_from_config(self.config) as device:
                 self.plugins = []
                 if "caparoc" in self.config.config:
-                    self.plugins.append(Caparoc(self.config, device, influxdb_queue))
+                    self.plugins.append(Caparoc(self.config, device, influxdb_publishers))
                 while True:
                     try:
                         async with aiomqtt.Client(self.config.mqtt_server) as mqtt_client:
